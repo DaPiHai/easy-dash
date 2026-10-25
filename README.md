@@ -31,8 +31,19 @@ Logo）、Shell 图标工厂（IShellItemImageFactory，任意尺寸透明图标
 npm install          # 安装 @tauri-apps/cli
 npm run icon         # 生成应用图标（首次）
 npm run dev          # 开发运行
-npm run build        # 构建 release（NSIS 安装包）
+npm run build        # 构建 release + NSIS 安装包
 ```
+
+> 若 `npm run build` 卡在下载 NSIS 工具链（`Downloading .../nsis-3.13.zip` 或
+> `nsis_tauri_utils.dll` 后报 `failed to bundle project: timeout: global`）：
+> 这是 GitHub 资源在部分网络下超时。手动准备缓存即可（bundler 校验 SHA1 后会跳过下载）：
+>
+> 1. 下载 [nsis-3.13.zip](https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip)，
+>    解压出的 `nsis-3.13` 目录内容放到 `%LOCALAPPDATA%\tauri\NSIS\`（`NSIS.exe`、`makensis.exe` 等直接在 NSIS 下）；
+> 2. 下载 [nsis_tauri_utils.dll](https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll)，
+>    放到 `%LOCALAPPDATA%\tauri\NSIS\Plugins\x86-unicode\additional\`。
+>
+> 国内网络可在 URL 前加 `https://ghproxy.net/` 前缀下载。
 
 ## 配置
 

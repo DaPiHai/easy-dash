@@ -15,7 +15,7 @@ pub fn create(app: &App) -> tauri::Result<()> {
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("easy-dash")
         .menu(&menu)
-        .menu_on_left_click(false)
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => overview::show(app),
             "reload" => {

@@ -40,8 +40,6 @@ pub struct AppState {
     pub config: Mutex<Config>,
     /// 本应用的窗口句柄（十进制 isize）
     pub own_hwnds: Mutex<Vec<isize>>,
-    /// 顶栏是否已注册 AppBar
-    pub appbar_registered: AtomicBool,
     /// 最近一个非本应用的前台窗口（点击 Dock 时 Dock 会抢走前台，
     /// 最小化/激活切换需依据点击前的真实前台判断）
     pub last_foreign_fg: AtomicIsize,
@@ -96,7 +94,6 @@ impl AppState {
             overview_open: AtomicBool::new(false),
             config: Mutex::new(Config::default()),
             own_hwnds: Mutex::new(Vec::new()),
-            appbar_registered: AtomicBool::new(false),
             last_foreign_fg: AtomicIsize::new(0),
             dock_hb_ms: AtomicU64::new(now_ms()),
             topbar_panel_open: AtomicBool::new(false),

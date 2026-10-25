@@ -45,7 +45,6 @@ pub struct WinEntry {
 }
 
 struct CollectCtx<'a> {
-    own_pid: u32,
     hwnds: &'a mut Vec<HWND>,
 }
 
@@ -53,10 +52,6 @@ unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let ctx = &mut *(lparam.0 as *mut CollectCtx);
     ctx.hwnds.push(hwnd);
     true.into()
-}
-
-fn is_cloaked(hwnd: HWND) -> bool {
-    cloaked_value(hwnd) != 0
 }
 
 /// cloaked 值：0=正常，1=应用主动隐藏，2=Shell 挂起（UWP 失焦挂起/其他虚拟桌面），4=继承
@@ -123,7 +118,6 @@ fn accept(hwnd: HWND, own_pid: u32) -> bool {
 pub fn list_windows(own_pid: u32, st: &AppState) -> Vec<WinEntry> {
     let mut hwnds: Vec<HWND> = Vec::new();
     let mut ctx = CollectCtx {
-        own_pid,
         hwnds: &mut hwnds,
     };
     unsafe { let _ = EnumWindows(Some(enum_cb), LPARAM(&mut ctx as *mut _ as isize)); }
