@@ -5,9 +5,9 @@
 //! 同步调用。所有失败都只降级（tray_available = false、图标为 None），
 //! 绝不 panic：一旦该线程被 panic 杀死，顶栏托盘会永久失去刷新能力。
 //!
-//! 图标不再用屏幕截图（浅色任务栏会让图标带白底），而是按托盘 tooltip
-//! 到 `NotifyIconSettings` 里匹配真实透明 PNG（见 winapi::app_icons）。
-use std::collections::{HashMap, HashSet};
+//! 图标来源：`NotifyIconSettings` 的真实透明 PNG（见 winapi::app_icons）。
+//! 其中 UIA 名称为空的托盘项（部分应用不设置 tooltip）通过屏幕图标视觉匹配
+//! 识别；QQ 等登录状态图标用 exe 图标代替静态快照，避免显示成离线状态。
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 
@@ -34,12 +34,10 @@ pub fn spawn(app: AppHandle) {
             _ => return,
         };
 
-        // 图标缓存：key = 托盘 tooltip。图标只与应用有关、与位置无关，
-        // 因此位置/尺寸变化不会导致重复解析（解析要读注册表 + 版本信息）
-        let mut icon_cache: HashMap<String, Option<String>> = HashMap::new();
-
+        // 图标缓存已移除：注册表条目与图标解码在 app_icons 内部 OnceLock 缓存，
+        // 视觉匹配只对「名称为空」的条目执行，刷新成本可忽略。
         while rx.recv().is_ok() {
-            let (items, available) = refresh_once(&app, &mut icon_cache);
+            let (items, available) = refresh_once(&app);
             {
                 let st = app.state::<AppState>();
                 if available {
@@ -65,10 +63,7 @@ pub fn request_refresh(app: &AppHandle) {
 /// 枚举一次托盘并补齐图标。返回 (条目列表, 枚举是否成功)。
 ///
 /// 枚举失败时返回缓存里的旧条目（可能是空），由调用方决定是否覆盖状态。
-fn refresh_once(
-    app: &AppHandle,
-    icon_cache: &mut HashMap<String, Option<String>>,
-) -> (Vec<TrayItem>, bool) {
+fn refresh_once(app: &AppHandle) -> (Vec<TrayItem>, bool) {
     let geoms = match winapi::tray::enumerate() {
         Ok(g) => g,
         Err(e) => {
@@ -79,41 +74,20 @@ fn refresh_once(
         }
     };
 
-    // 清掉已消失条目的缓存，防止长时间运行后无限增长
-    let live: HashSet<&str> = geoms.iter().map(|g| g.name.as_str()).collect();
-    icon_cache.retain(|k, _| live.contains(k.as_str()));
-
-    let mut items = Vec::with_capacity(geoms.len());
-    for geom in geoms {
-        let icon = icon_for(&geom.kind, &geom.name, icon_cache);
-        items.push(TrayItem {
+    let mut items: Vec<TrayItem> = geoms
+        .into_iter()
+        .map(|geom| TrayItem {
             name: geom.name,
             kind: geom.kind,
-            icon,
+            icon: None,
             x: geom.x,
             y: geom.y,
             w: geom.w,
             h: geom.h,
-        });
-    }
-    (items, true)
-}
+        })
+        .collect();
 
-/// 取（或复用）单个条目的真实透明图标
-fn icon_for(
-    kind: &str,
-    name: &str,
-    cache: &mut HashMap<String, Option<String>>,
-) -> Option<String> {
-    // 「显示隐藏的图标」按钮本身没有应用图标
-    if kind != "icon" {
-        return None;
-    }
-    if let Some(hit) = cache.get(name) {
-        return hit.clone();
-    }
-    let icon = winapi::app_icons::resolve_tray_icon(name);
-    // 解析失败也写入缓存：否则每轮刷新都对同一个名字重复读注册表
-    cache.insert(name.to_string(), icon.clone());
-    icon
+    // 名称匹配 + 无名项视觉匹配，一次补齐图标（也会给无名项补上显示名）
+    winapi::app_icons::resolve_tray_items(&mut items);
+    (items, true)
 }

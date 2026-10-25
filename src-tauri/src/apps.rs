@@ -61,6 +61,7 @@ fn refresh_once(app: &AppHandle) {
     let classic = winapi::start_apps::enumerate();
     let packaged = winapi::packaged_apps::enumerate();
     let mut apps = merge_apps(classic, packaged);
+    normalize_uwp_icons(&mut apps);
     sort_apps(&mut apps);
 
     let count = apps.len();
@@ -99,6 +100,18 @@ pub fn merge_apps(classic: Vec<AppEntry>, packaged: Vec<AppEntry>) -> Vec<AppEnt
         out.push(entry);
     }
     out
+}
+
+/// 打包应用的 Logo 资源常带大块透明留白（150×150 资源里图形只占中间一小块），
+/// 直接显示会明显偏小；这里统一裁掉留白并缩放到 48px 方形画布。
+fn normalize_uwp_icons(apps: &mut [AppEntry]) {
+    for entry in apps.iter_mut().filter(|e| e.kind == "uwp") {
+        if let Some(url) = entry.icon.as_deref() {
+            if let Some(fixed) = winapi::icons::normalize_app_icon(url, 48) {
+                entry.icon = Some(fixed);
+            }
+        }
+    }
 }
 
 /// 按显示名做本地化排序（中文按 Windows 排序规则；CompareStringEx 失败回退小写比较）。

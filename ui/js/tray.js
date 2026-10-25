@@ -87,6 +87,49 @@ function sameItems(a, b) {
 function render() {
   if (!trayEl) return;
   trayEl.innerHTML = items.map(itemHtml).join("");
+  markDarkIcons();
+}
+
+/**
+ * 深色图标在深色顶栏上几乎不可见（Docker 黑鲸鱼、抖音黑底、QQ 深色企鹅等）。
+ * 用 canvas 采样图标的 alpha 加权平均亮度，偏暗的加 .tray-dark 类，
+ * CSS 会给它垫一层浅色圆角底。data URL 同源，canvas 不会被污染。
+ */
+function markDarkIcons() {
+  if (!trayEl) return;
+  const imgs = trayEl.querySelectorAll("img");
+  for (const img of imgs) {
+    if (img.dataset.darkChecked) continue;
+    img.dataset.darkChecked = "1";
+    const analyze = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 16;
+        canvas.height = 16;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) return;
+        ctx.clearRect(0, 0, 16, 16);
+        ctx.drawImage(img, 0, 0, 16, 16);
+        const data = ctx.getImageData(0, 0, 16, 16).data;
+        let sum = 0;
+        let weight = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const a = data[i + 3];
+          if (a < 40) continue; // 透明padding不计入
+          const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+          sum += lum * a;
+          weight += a;
+        }
+        if (weight > 0 && sum / weight < 85) {
+          img.classList.add("tray-dark");
+        }
+      } catch (e) {
+        /* canvas 不可用时保持原样 */
+      }
+    };
+    if (img.complete && img.naturalWidth > 0) analyze();
+    else img.addEventListener("load", analyze, { once: true });
+  }
 }
 
 function itemHtml(item, index) {

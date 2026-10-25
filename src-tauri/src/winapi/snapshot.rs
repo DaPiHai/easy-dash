@@ -7,8 +7,8 @@ use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
+    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -96,6 +96,58 @@ pub fn capture_jpeg(hwnd: HWND, max_w: u32) -> Option<String> {
                         ));
                     }
                 }
+            }
+        }
+
+        SelectObject(mem, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(mem);
+        let _ = ReleaseDC(None, hdc_screen);
+        result
+    }
+}
+
+/// 抓取屏幕上一块矩形区域（物理像素），返回自顶向下 RGBA。
+///
+/// 用于托盘图标的视觉匹配：UIA 给出的托盘按钮区域在屏幕上，按
+/// 候选图标合成后比较像素，可以识别 UIA 名称为空的托盘项（没有 tooltip 时
+/// 注册表条目无从按名字对应）。
+pub fn capture_rgba(x: i32, y: i32, w: i32, h: i32) -> Option<(Vec<u8>, i32, i32)> {
+    if w <= 0 || h <= 0 || w > 512 || h > 512 {
+        return None;
+    }
+    unsafe {
+        let hdc_screen = GetDC(None);
+        let mem = CreateCompatibleDC(hdc_screen);
+        let bmp = CreateCompatibleBitmap(hdc_screen, w, h);
+        let old = SelectObject(mem, HGDIOBJ(bmp.0));
+        let ok = BitBlt(mem, 0, 0, w, h, hdc_screen, x, y, SRCCOPY).is_ok();
+
+        let mut result = None;
+        if ok {
+            let mut bmi = BITMAPINFO::default();
+            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            bmi.bmiHeader.biWidth = w;
+            bmi.bmiHeader.biHeight = -h; // 自顶向下
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = 0;
+
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            if GetDIBits(
+                mem,
+                bmp,
+                0,
+                h as u32,
+                Some(buf.as_mut_ptr() as *mut _),
+                &mut bmi,
+                DIB_RGB_COLORS,
+            ) != 0
+            {
+                for px in buf.chunks_exact_mut(4) {
+                    px.swap(0, 2); // BGRA → RGBA
+                }
+                result = Some((buf, w, h));
             }
         }
 

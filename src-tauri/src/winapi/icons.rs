@@ -498,7 +498,8 @@ pub fn window_icon_data_url(hwnd: HWND) -> Option<String> {
 }
 
 /// 从文件路径提取图标（用于固定应用的启动项）
-pub fn file_icon_data_url(path: &str) -> Option<String> {    let wpath = super::common::to_wide(path);
+pub fn file_icon_data_url(path: &str) -> Option<String> {
+    let wpath = super::common::to_wide(path);
     let mut sfi = SHFILEINFOW::default();
     let ok = unsafe {
         SHGetFileInfoW(
@@ -616,6 +617,63 @@ fn normalize_icon_alpha(buf: &mut [u8]) {
     }
 }
 
+/// 把一张图标 PNG data URL 规范化：裁掉四周透明留白，再等比缩放到
+/// `target` 尺寸并居中（留 2px 透明边距）。
+///
+/// UWP 的 Square44x44Logo 资源往往自带大块透明 padding（例如 150×150 的
+/// 资源里图形只占中间一小块），直接按 48px 显示会明显偏小。桌面应用图标
+/// 通常已铺满，不走这条路径（仅应用中心对 uwp 条目调用）。
+pub fn normalize_app_icon(data_url: &str, target: u32) -> Option<String> {
+    let b64 = data_url.rsplit_once("base64,").map(|(_, b)| b)?;
+    let bytes = STANDARD.decode(b64).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 || w > 1024 || h > 1024 {
+        return None;
+    }
+
+    // 透明留白边界（alpha > 8 视为有效图形）
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (w, h, 0u32, 0u32);
+    let mut found = false;
+    for (x, y, p) in img.enumerate_pixels() {
+        if p[3] > 8 {
+            found = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    if !found {
+        return None;
+    }
+
+    let target = target.clamp(16, 256);
+    let bw = (max_x - min_x + 1).max(1);
+    let bh = (max_y - min_y + 1).max(1);
+    let pad = 2u32;
+    let inner = target.saturating_sub(pad * 2).max(1);
+    let scale = (inner as f32 / bw as f32).min(inner as f32 / bh as f32);
+    let nw = ((bw as f32 * scale).round() as u32).clamp(1, inner);
+    let nh = ((bh as f32 * scale).round() as u32).clamp(1, inner);
+
+    let cropped = image::imageops::crop_imm(&img, min_x, min_y, bw, bh).to_image();
+    let resized = image::imageops::resize(&cropped, nw, nh, image::imageops::FilterType::Lanczos3);
+    let mut canvas = image::RgbaImage::new(target, target);
+    image::imageops::overlay(
+        &mut canvas,
+        &resized,
+        ((target - nw) / 2) as i64,
+        ((target - nh) / 2) as i64,
+    );
+
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(canvas)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(format!("data:image/png;base64,{}", STANDARD.encode(png)))
+}
+
 #[cfg(test)]
 mod shell_icon_tests {
     use super::*;
@@ -712,5 +770,44 @@ mod shell_icon_tests {
             "[icons] 输出 alpha：不透明 {opaque}、全透明 {transparent} / {}",
             img.width() * img.height()
         );
+    }
+
+    /// UWP Logo 留白裁剪：生成 64×64 画布、中间 20×20 图形，规范化到 48px 后
+    /// 图形应铺满约 44px（2px 边距）且保持居中。
+    #[test]
+    fn normalize_app_icon_trims_padding() {
+        let mut img = image::RgbaImage::new(64, 64);
+        for y in 22..42 {
+            for x in 22..42 {
+                img.put_pixel(x, y, image::Rgba([200, 40, 40, 255]));
+            }
+        }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("编码 PNG");
+        let url = format!("data:image/png;base64,{}", STANDARD.encode(png));
+
+        let out = normalize_app_icon(&url, 48).expect("应能规范化");
+        let bytes = STANDARD
+            .decode(out.split(',').nth(1).expect("data URL"))
+            .expect("base64");
+        let out_img = image::load_from_memory(&bytes).expect("PNG 解码").to_rgba8();
+        assert_eq!((out_img.width(), out_img.height()), (48, 48));
+
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (48u32, 48u32, 0u32, 0u32);
+        for (x, y, p) in out_img.enumerate_pixels() {
+            if p[3] > 8 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+        let bw = max_x - min_x + 1;
+        let bh = max_y - min_y + 1;
+        assert!((40..=44).contains(&bw), "图形应铺满内部（宽 {bw}）");
+        assert!((40..=44).contains(&bh), "图形应铺满内部（高 {bh}）");
+        assert!(min_x >= 2 && min_y >= 2, "应保留 2px 透明边距");
     }
 }

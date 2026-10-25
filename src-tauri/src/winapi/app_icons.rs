@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 #![allow(non_upper_case_globals)]
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -33,6 +34,7 @@ use windows::Win32::UI::Shell::ExtractIconExW;
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
 
 use super::common::to_wide;
+use crate::types::TrayItem;
 
 /// 解析出的应用身份（显示名 + 图标）
 #[derive(Debug, Clone)]
@@ -84,11 +86,190 @@ struct NotifyEntry {
 pub fn resolve_tray_icon(name: &str) -> Option<String> {
     let entries = entries();
     let entry = best_match(name, entries)?;
-    // IconSnapshot 缺失时退回 exe 文件图标（同样带 alpha）
+    tray_icon_of(entry)
+}
+
+/// 托盘条目的图标：`IconSnapshot` 优先，缺失时退回 exe 文件图标。
+///
+/// QQ / TIM 这类「登录状态图标」的注册表快照是静态的（常停在离线灰企鹅），
+/// 直接显示会被误认为离线；这类应用改用 exe 文件图标（彩色 logo）。
+fn tray_icon_of(entry: &NotifyEntry) -> Option<String> {
+    if is_status_dynamic(entry) {
+        if let Some(icon) = entry.exe_path.as_deref().and_then(exe_icon) {
+            return Some(icon);
+        }
+    }
     entry
         .icon
         .clone()
         .or_else(|| entry.exe_path.as_deref().and_then(exe_icon))
+}
+
+/// 快照可能停留在旧状态（离线/未读等）的登录状态类应用。
+fn is_status_dynamic(entry: &NotifyEntry) -> bool {
+    entry.exe_stem == "qq" || entry.description == "qq"
+}
+
+/// 批量解析托盘条目的图标/名称。
+///
+/// 两步：
+/// 1. 有 UIA 名称的：按名称匹配注册表条目（原有逻辑）；
+/// 2. 名称为空的：用**屏幕像素视觉匹配**从注册表条目里找最像的图标
+///    （Win11 上部分应用不设置托盘 tooltip，如 DeepSeek Harness，UIA Name
+///    为空，按名字永远匹配不到，只能靠图标外观识别）。
+pub fn resolve_tray_items(items: &mut [TrayItem]) {
+    let entries = entries();
+    let mut used_exes: HashSet<String> = HashSet::new();
+
+    for item in items.iter_mut() {
+        if item.kind != "icon" {
+            continue;
+        }
+        let name = item.name.clone();
+        if is_unnamed_tray_name(&name) || char_len(&normalize(&name)) < 2 {
+            continue;
+        }
+        if let Some(entry) = best_match(&name, entries) {
+            item.icon = tray_icon_of(entry);
+            if let Some(path) = entry.exe_path.as_deref() {
+                used_exes.insert(path.to_lowercase());
+            }
+        }
+    }
+
+    for item in items.iter_mut() {
+        if item.kind != "icon" || !is_unnamed_tray_name(&item.name) {
+            continue;
+        }
+        if let Some((name, icon)) =
+            match_unnamed_tray_icon((item.x, item.y, item.w, item.h), &used_exes)
+        {
+            item.name = name;
+            item.icon = icon;
+        }
+    }
+}
+
+/// UIA 名称为空时 tray.rs 会填「托盘图标」占位，这里视为无名项。
+fn is_unnamed_tray_name(name: &str) -> bool {
+    let name = name.trim();
+    name.is_empty() || name == "托盘图标"
+}
+
+// ==================== 无名托盘项的视觉匹配 ====================
+
+/// 注册表条目图标的解码缓存（与 `entries()` 一一对应）
+fn entry_images() -> &'static Vec<Option<image::RgbaImage>> {
+    static CACHE: OnceLock<Vec<Option<image::RgbaImage>>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        entries()
+            .iter()
+            .map(|e| e.icon.as_deref().and_then(decode_icon_data_url))
+            .collect()
+    })
+}
+
+fn decode_icon_data_url(url: &str) -> Option<image::RgbaImage> {
+    let b64 = url.rsplit_once("base64,").map(|(_, b)| b)?;
+    let bytes = STANDARD.decode(b64).ok()?;
+    Some(image::load_from_memory(&bytes).ok()?.into_rgba8())
+}
+
+/// 对 UIA 名称为空的托盘项做视觉匹配。
+///
+/// 抓取托盘按钮在屏幕上的实际像素（含任务栏背景），把每个候选图标缩放到
+/// 图标区域大小后按 alpha 合成到估算出的背景色上，取 MSE 最小的候选。
+/// 要求「明显优于第二名」才返回，避免把不相干条目硬塞给这个图标。
+fn match_unnamed_tray_icon(
+    rect: (i32, i32, i32, i32),
+    used_exes: &HashSet<String>,
+) -> Option<(String, Option<String>)> {
+    let (bx, by, bw, bh) = rect;
+    if bw < 16 || bh < 16 || bw > 128 || bh > 128 {
+        return None;
+    }
+    let (cap, cw, ch) = super::snapshot::capture_rgba(bx, by, bw, bh)?;
+
+    // 图标尺寸/位置：按钮 32×48 逻辑像素，图标 16×16 居中、顶部偏移 16
+    let scale = bw as f32 / 32.0;
+    let iw = ((16.0 * scale).round() as i32).clamp(8, cw);
+    let ih = iw.min(ch);
+    let ix = ((cw - iw) / 2).clamp(0, cw - iw);
+    let iy = ((16.0 * scale).round() as i32).clamp(0, ch - ih);
+
+    // 背景色：图标区域之外的按钮像素平均值（任务栏半透明底色，局部近似均匀）
+    let (mut bg_sum, mut bg_n) = ([0u64; 3], 0u64);
+    for y in 0..ch {
+        for x in 0..cw {
+            if x >= ix && x < ix + iw && y >= iy && y < iy + ih {
+                continue;
+            }
+            let idx = ((y * cw + x) * 4) as usize;
+            for c in 0..3 {
+                bg_sum[c] += cap[idx + c] as u64;
+            }
+            bg_n += 1;
+        }
+    }
+    if bg_n == 0 {
+        return None;
+    }
+    let bg = [
+        (bg_sum[0] / bg_n) as u8,
+        (bg_sum[1] / bg_n) as u8,
+        (bg_sum[2] / bg_n) as u8,
+    ];
+
+    // 抓到的图标区域 RGB
+    let mut cap_icon = vec![0f32; (iw * ih * 3) as usize];
+    for y in 0..ih {
+        for x in 0..iw {
+            let src = (((y + iy) * cw + (x + ix)) * 4) as usize;
+            let dst = ((y * iw + x) * 3) as usize;
+            cap_icon[dst] = cap[src] as f32;
+            cap_icon[dst + 1] = cap[src + 1] as f32;
+            cap_icon[dst + 2] = cap[src + 2] as f32;
+        }
+    }
+
+    let entries = entries();
+    let images = entry_images();
+    let mut scored: Vec<(f64, usize)> = Vec::new();
+    for (i, img) in images.iter().enumerate() {
+        let Some(img) = img else { continue };
+        if let Some(path) = entries[i].exe_path.as_deref() {
+            if used_exes.contains(&path.to_lowercase()) {
+                continue;
+            }
+        }
+        let resized =
+            image::imageops::resize(img, iw as u32, ih as u32, image::imageops::FilterType::Triangle);
+        let mut sum = 0f64;
+        for (x, y, p) in resized.enumerate_pixels() {
+            let a = p[3] as f32 / 255.0;
+            let di = ((y * iw as u32 + x) as usize) * 3;
+            for c in 0..3 {
+                let v = p[c] as f32 * a + bg[c] as f32 * (1.0 - a);
+                let d = v - cap_icon[di + c];
+                sum += (d * d) as f64;
+            }
+        }
+        scored.push((sum / (iw * ih * 3) as f64, i));
+    }
+    scored.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let &(best, idx) = scored.first()?;
+    let second = scored.get(1).map(|s| s.0).unwrap_or(f64::MAX);
+    // 经验值：正确匹配 MSE 通常 < 50；错误候选 > 1000。
+    if best > 700.0 || second < best * 3.0 + 300.0 {
+        return None;
+    }
+    let entry = &entries[idx];
+    let name = display_name_from(entry)?;
+    if name.trim().is_empty() {
+        return None;
+    }
+    Some((name, tray_icon_of(entry)))
 }
 
 /// 按通知处理器 PrimaryId 解析显示名与图标。
@@ -853,6 +1034,15 @@ mod tests {
         assert_eq!(display_name_from(qq).as_deref(), Some("QQ"));
         let zcode = best_match("dev.zcode.app", &entries).expect("应命中 ZCode");
         assert_eq!(display_name_from(zcode).as_deref(), Some("ZCode"));
+    }
+
+    /// 登录状态类图标（QQ/TIM）改用 exe 图标，避免静态快照显示成离线。
+    #[test]
+    fn status_dynamic_apps_detected() {
+        assert!(is_status_dynamic(&entry("", "qq", "QQ")));
+        assert!(is_status_dynamic(&entry("", "QQ", "QQ")));
+        assert!(!is_status_dynamic(&entry("", "weixin", "Weixin")));
+        assert!(!is_status_dynamic(&entry("", "douyintray", "douyin_tray")));
     }
 
     /// 本机冒烟：读真实注册表，确认能解出带 alpha 的 PNG data URL。
