@@ -7,9 +7,8 @@ use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-    GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ,
-    SRCCOPY,
+    CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
+    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ,
 };
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -106,89 +105,5 @@ pub fn capture_jpeg(hwnd: HWND, max_w: u32) -> Option<String> {
         let _ = ReleaseDC(None, hdc_screen);
         result
     }
-}
-
-/// 抓取屏幕指定区域（物理像素）→ PNG data URL（用于顶栏托盘图标镜像）。
-///
-/// 只截托盘图标的 16~48px 小区块，因此对区域大小做上限保护（>512 视为非法）。
-/// 进程必须是 Per-Monitor DPI 感知（Tauri 默认），否则 BitBlt 的屏幕坐标会被
-/// 系统按逻辑像素缩放，与 UIA 给出的物理像素 rect 对不上。
-pub fn capture_screen_region_png(x: i32, y: i32, w: i32, h: i32) -> Option<String> {
-    if w <= 0 || h <= 0 || w > 512 || h > 512 {
-        return None;
-    }
-    unsafe {
-        let hdc_screen = GetDC(None);
-        if hdc_screen.is_invalid() {
-            return None;
-        }
-        let mem = CreateCompatibleDC(hdc_screen);
-        let bmp = CreateCompatibleBitmap(hdc_screen, w, h);
-        if mem.is_invalid() || bmp.is_invalid() {
-            // 兜底释放：正常几乎不会走到
-            if !bmp.is_invalid() {
-                let _ = DeleteObject(HGDIOBJ(bmp.0));
-            }
-            if !mem.is_invalid() {
-                let _ = DeleteDC(mem);
-            }
-            let _ = ReleaseDC(None, hdc_screen);
-            return None;
-        }
-
-        let old = SelectObject(mem, HGDIOBJ(bmp.0));
-        let copied = BitBlt(mem, 0, 0, w, h, hdc_screen, x, y, SRCCOPY).is_ok();
-        // GetDIBits 要求位图未被选入 DC，先恢复旧对象再取像素
-        SelectObject(mem, old);
-
-        let mut result = None;
-        if copied {
-            let mut bmi = BITMAPINFO::default();
-            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = w;
-            bmi.bmiHeader.biHeight = -h; // 负高度 = 自顶向下
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-            let mut buf = vec![0u8; (w * h * 4) as usize];
-            if GetDIBits(
-                mem,
-                bmp,
-                0,
-                h as u32,
-                Some(buf.as_mut_ptr() as *mut _),
-                &mut bmi,
-                DIB_RGB_COLORS,
-            ) != 0
-            {
-                // BGRA → RGBA；屏幕截图不带 alpha（BitBlt 填 0），
-                // 这里统一改成不透明，否则顶栏上的图标会变成全透明
-                for px in buf.chunks_exact_mut(4) {
-                    px.swap(0, 2);
-                    px[3] = 255;
-                }
-                result = rgba_png_data_url(buf, w, h);
-            }
-        }
-
-        let _ = DeleteObject(HGDIOBJ(bmp.0));
-        let _ = DeleteDC(mem);
-        let _ = ReleaseDC(None, hdc_screen);
-        result
-    }
-}
-
-/// RGBA 像素 → PNG data URL（截图取图标专用；不走 image 的 panic 路径）
-fn rgba_png_data_url(buf: Vec<u8>, w: i32, h: i32) -> Option<String> {
-    if w <= 0 || h <= 0 || buf.len() != (w as usize) * (h as usize) * 4 {
-        return None;
-    }
-    let img = image::RgbaImage::from_raw(w as u32, h as u32, buf)?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(img)
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    Some(format!("data:image/png;base64,{}", STANDARD.encode(png)))
 }
 

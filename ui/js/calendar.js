@@ -1,5 +1,8 @@
 // 中文月历渲染（纯原生 Date 计算，不引第三方依赖）。
 // 周一为第一列，表头「一 二 三 四 五 六 日」，今天高亮，非当月日期淡化显示。
+// 叠加 cn-holidays.js 的法定节假日数据：休息日红字 + 节日短名，调休上班日显示「班」角标。
+import { escapeHtml } from "./api.js";
+import { holidayFor } from "./cn-holidays.js";
 
 const WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -25,6 +28,12 @@ export function formatMonthTitle(view) {
   return view.year + "年" + (view.month + 1) + "月";
 }
 
+/** 节日名过长时截断（单元格约 45px 宽，9px 字号最多放 4 个汉字） */
+function shortName(name) {
+  const s = String(name || "").trim();
+  return s.length > 4 ? s.slice(0, 4) : s;
+}
+
 /**
  * 渲染月历到容器。
  * @param {HTMLElement} container 容器（会被 innerHTML 覆盖）
@@ -46,11 +55,34 @@ export function renderCalendar(container, view) {
   for (let i = 0; i < cellCount; i++) {
     // 用 Date 溢出规则直接算出前后月的日期
     const d = new Date(view.year, view.month, 1 - offset + i);
-    const isOther = d.getMonth() !== view.month;
-    const isToday =
-      d.getFullYear() === today.year && d.getMonth() === today.month && d.getDate() === today.day;
-    const cls = ["cal-day", isOther ? "other" : "", isToday ? "today" : ""].filter(Boolean).join(" ");
-    cells += '<div class="' + cls + '">' + d.getDate() + "</div>";
+    const y = d.getFullYear();
+    const m = d.getMonth();
+    const day = d.getDate();
+    const isOther = m !== view.month;
+    const isToday = y === today.year && m === today.month && day === today.day;
+    // 节假日：off=true 休息日；off=false 调休上班。
+    // 只标记「当月」的日期——前后月溢出的淡化日期不标，避免看起来像本月节日。
+    const holiday = isOther ? null : holidayFor(y, m, day);
+    const isOff = !!(holiday && holiday.off === true);
+    const isWork = !!(holiday && holiday.off === false);
+
+    const cls = [
+      "cal-day",
+      isOther ? "other" : "",
+      isToday ? "today" : "",
+      isOff ? "is-off" : "",
+      isWork ? "is-work" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    let inner = '<span class="cal-day-num">' + day + "</span>";
+    if (isOff) {
+      inner += '<span class="cal-holiday">' + escapeHtml(shortName(holiday.name)) + "</span>";
+    } else if (isWork) {
+      inner += '<span class="cal-work">班</span>';
+    }
+    cells += '<div class="' + cls + '">' + inner + "</div>";
   }
 
   let weekdays = "";

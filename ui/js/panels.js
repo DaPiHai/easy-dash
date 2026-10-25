@@ -12,8 +12,8 @@ export const BAR_HEIGHT = 32;
 
 /** 各面板展开时的窗口高度（逻辑像素） */
 export const PANEL_HEIGHTS = {
-  notifications: 470,
-  control: 410,
+  notifications: 560,
+  control: 520,
 };
 
 /** 面板名 → 容器 id（与 topbar.html 对应） */

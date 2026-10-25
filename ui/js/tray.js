@@ -175,8 +175,16 @@ function clickTray(el, button) {
   const index = Number(el.dataset.index);
   if (!Number.isInteger(index) || index < 0) return;
   hideTooltip();
+  // 弹窗锚点 = 顶栏图标中心（顶栏窗口固定在屏幕 (0,0)，client 坐标即屏幕坐标）
+  let anchorX = null;
   try {
-    invoke("tray_click", { index, button }).catch(() => {});
+    const r = el.getBoundingClientRect();
+    anchorX = Math.round(r.left + r.width / 2);
+  } catch (e) {
+    anchorX = null;
+  }
+  try {
+    invoke("tray_click", { index, button, anchorX }).catch(() => {});
   } catch (e) {
     /* 忽略 */
   }

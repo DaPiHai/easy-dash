@@ -50,6 +50,14 @@ pub fn run() {
             commands::set_dark_mode,
             commands::set_power_mode,
             commands::power_action,
+            commands::get_media_state,
+            commands::media_action,
+            commands::get_wifi_networks,
+            commands::connect_wifi,
+            commands::disconnect_wifi,
+            commands::get_bt_devices,
+            commands::set_bt_connected,
+            commands::open_settings_page,
         ])
         .setup(|app| {
             // 加载（或初始化）配置

@@ -1,11 +1,14 @@
 pub mod activate;
+pub mod app_icons;
 pub mod appbar;
 pub mod brightness;
+pub mod bt;
 pub mod common;
 pub mod enumerate;
 pub mod fullscreen;
 pub mod icons;
 pub mod launcher;
+pub mod media;
 pub mod power;
 pub mod radio;
 pub mod snapshot;

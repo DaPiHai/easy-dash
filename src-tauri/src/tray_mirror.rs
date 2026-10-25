@@ -1,9 +1,12 @@
-//! 任务托盘镜像工作线程（编排 UIA 枚举 + 图标截图 + 缓存）。
+//! 任务托盘镜像工作线程（编排 UIA 枚举 + 图标解析 + 缓存）。
 //!
-//! UI Automation 的跨进程调用以及屏幕截图都可能在没有消息泵的线程上阻塞，
-//! 因此全部放在本专用线程里串行执行，绝不在主线程/IPC 线程上同步调用。
-//! 所有失败都只降级（tray_available = false、图标为 None），绝不 panic：
-//! 一旦该线程被 panic 杀死，顶栏托盘会永久失去刷新能力。
+//! UI Automation 的跨进程调用以及注册表/版本信息读取都可能在没有消息泵的
+//! 线程上阻塞，因此全部放在本专用线程里串行执行，绝不在主线程/IPC 线程上
+//! 同步调用。所有失败都只降级（tray_available = false、图标为 None），
+//! 绝不 panic：一旦该线程被 panic 杀死，顶栏托盘会永久失去刷新能力。
+//!
+//! 图标不再用屏幕截图（浅色任务栏会让图标带白底），而是按托盘 tooltip
+//! 到 `NotifyIconSettings` 里匹配真实透明 PNG（见 winapi::app_icons）。
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -12,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 use crate::app_state::AppState;
-use crate::types::{TrayGeom, TrayItem};
+use crate::types::TrayItem;
 use crate::winapi;
 
 /// 启动托盘镜像线程（整个进程只应调用一次，Receiver 已被 take 走时直接退出）。
@@ -31,8 +34,8 @@ pub fn spawn(app: AppHandle) {
             _ => return,
         };
 
-        // 图标缓存：key = name+x+y+w+h。托盘图标只在悬停/换图标时才会变，
-        // 命中直接复用，避免每次刷新都截图
+        // 图标缓存：key = 托盘 tooltip。图标只与应用有关、与位置无关，
+        // 因此位置/尺寸变化不会导致重复解析（解析要读注册表 + 版本信息）
         let mut icon_cache: HashMap<String, Option<String>> = HashMap::new();
 
         while rx.recv().is_ok() {
@@ -71,22 +74,18 @@ fn refresh_once(
         Err(e) => {
             eprintln!("[tray-mirror] 托盘枚举失败，降级为旧数据：{e}");
             let st = app.state::<AppState>();
-            let old = st
-                .tray
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
+            let old = st.tray.lock().unwrap_or_else(|e| e.into_inner()).clone();
             return (old, false);
         }
     };
 
     // 清掉已消失条目的缓存，防止长时间运行后无限增长
-    let live: HashSet<String> = geoms.iter().map(cache_key).collect();
-    icon_cache.retain(|k, _| live.contains(k));
+    let live: HashSet<&str> = geoms.iter().map(|g| g.name.as_str()).collect();
+    icon_cache.retain(|k, _| live.contains(k.as_str()));
 
     let mut items = Vec::with_capacity(geoms.len());
     for geom in geoms {
-        let icon = icon_for(&geom, icon_cache);
+        let icon = icon_for(&geom.kind, &geom.name, icon_cache);
         items.push(TrayItem {
             name: geom.name,
             kind: geom.kind,
@@ -100,25 +99,21 @@ fn refresh_once(
     (items, true)
 }
 
-/// 缓存键：位置/尺寸变化（托盘重排、分辨率切换）会自然失效重新截图
-fn cache_key(g: &TrayGeom) -> String {
-    format!("{}|{}|{}|{}|{}", g.name, g.x, g.y, g.w, g.h)
-}
-
-/// 取（或复用）单个条目的图标截图
-fn icon_for(g: &TrayGeom, cache: &mut HashMap<String, Option<String>>) -> Option<String> {
-    // 「显示隐藏的图标」按钮本身没有应用图标，不需要截图
-    if g.kind != "icon" {
+/// 取（或复用）单个条目的真实透明图标
+fn icon_for(
+    kind: &str,
+    name: &str,
+    cache: &mut HashMap<String, Option<String>>,
+) -> Option<String> {
+    // 「显示隐藏的图标」按钮本身没有应用图标
+    if kind != "icon" {
         return None;
     }
-    let key = cache_key(g);
-    if let Some(hit) = cache.get(&key) {
+    if let Some(hit) = cache.get(name) {
         return hit.clone();
     }
-    let icon = g
-        .icon_rect
-        .and_then(|(x, y, w, h)| winapi::snapshot::capture_screen_region_png(x, y, w, h));
-    // 截图失败也写入缓存：否则每轮刷新都对同一区域重复尝试，白耗 CPU
-    cache.insert(key, icon.clone());
+    let icon = winapi::app_icons::resolve_tray_icon(name);
+    // 解析失败也写入缓存：否则每轮刷新都对同一个名字重复读注册表
+    cache.insert(name.to_string(), icon.clone());
     icon
 }

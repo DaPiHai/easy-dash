@@ -22,26 +22,31 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::core::{BSTR, IUnknown};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationCondition, IUIAutomationElement,
     IUIAutomationElementArray, TreeScope_Children, TreeScope_Descendants,
 };
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetCursorPos, GetWindowRect, SetCursorPos,
+    EnumWindows, GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowThreadProcessId, IsWindowVisible, SetCursorPos, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
+    GW_OWNER, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 
 use crate::types::TrayGeom;
@@ -254,12 +259,11 @@ fn geom_of(el: &IUIAutomationElement, scan: &TrayScan) -> Option<TrayGeom> {
             y,
             w,
             h,
-            icon_rect: icon_rect_of(el, &scan.cond),
         })
     } else if automation_id == "SystemTrayIcon"
         && bstr_value(unsafe { el.CurrentClassName() }) == "SystemTray.NormalButton"
     {
-        // 「显示隐藏的图标」按钮候选：本身不是应用图标，不需要截图。
+        // 「显示隐藏的图标」按钮候选：本身不是应用图标，不需要图标。
         // 这里先全部收下，真正的按钮由 pick_overflow 按"最左"规则挑选
         // （输入法指示器属性完全相同，只有位置能区分）
         Some(TrayGeom {
@@ -269,7 +273,6 @@ fn geom_of(el: &IUIAutomationElement, scan: &TrayScan) -> Option<TrayGeom> {
             y,
             w,
             h,
-            icon_rect: None,
         })
     } else {
         None
@@ -416,4 +419,232 @@ pub fn is_available() -> bool {
     }
     // 自动隐藏的任务栏会被移到屏幕外：此时 UIA 里没有可见托盘图标
     scan.taskbar.top < scan.screen.bottom && scan.taskbar.bottom > scan.screen.top
+}
+
+// ==================== 托盘弹窗顶栏锚定 ====================
+
+/// 弹窗候选的最小/最大边长（像素）：太小的（tooltip）和太大的（主窗口）都不迁移
+const POPUP_MIN_SIZE: i32 = 60;
+const POPUP_MAX_SIZE: i32 = 900;
+/// 弹窗顶部目标位置（逻辑像素）：顶栏 32px + 间距，按 DPI 缩放
+const TOPBAR_OFFSET_LOGICAL: f32 = 40.0;
+
+/// 顶层可见窗口快照（用于识别点击后新出现的弹窗）。
+///
+/// 只收可见窗口：点击前就存在的隐藏窗口在点击后"由隐转显"时，
+/// 会表现为快照差异里的新窗口，正是我们要抓的弹窗。
+pub fn snapshot_windows() -> Vec<isize> {
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let out = &mut *(lparam.0 as *mut Vec<isize>);
+        if IsWindowVisible(hwnd).as_bool() {
+            out.push(hwnd.0 as isize);
+        }
+        true.into()
+    }
+
+    let mut out: Vec<isize> = Vec::new();
+    let ctx = &mut out as *mut Vec<isize>;
+    unsafe {
+        let _ = EnumWindows(Some(enum_cb), LPARAM(ctx as isize));
+    }
+    out
+}
+
+/// 弹窗候选判定与打分：返回 (优先级, 距托盘点击点的距离²)。
+/// 优先级：#32768 经典菜单(2) > Chrome_WidgetWin_1 应用浮层(1) > 其它浮窗(0)。
+fn popup_score(hwnd: HWND, own_pid: u32, tray_point: (i32, i32)) -> Option<(i32, i64)> {
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || pid == own_pid {
+            return None; // 自己的窗口 / 无主窗口都不迁移
+        }
+        let class = super::common::class_name(hwnd);
+        if class.is_empty()
+            || class == "Shell_TrayWnd"
+            || class == "Shell_SecondaryTrayWnd"
+            || class == "Progman"
+            || class == "WorkerW"
+        {
+            return None;
+        }
+
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let exstyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let owner = GetWindow(hwnd, GW_OWNER).unwrap_or_default();
+        let has_owner = !owner.is_invalid();
+
+        let is_menu = class == "#32768";
+        let is_chrome_popup = class == "Chrome_WidgetWin_1" && has_owner;
+        let is_tool_window = exstyle & WS_EX_TOOLWINDOW.0 != 0;
+        // 无 owner 的 WS_POPUP 往往是应用主窗口（无边框窗口），不迁移；
+        // 有 owner 的才是菜单/浮层
+        let is_owned_popup = style & WS_POPUP.0 != 0 && has_owner;
+        // 顶层浮层（菜单/托盘气泡）通常是 WS_EX_TOPMOST；实测 QQNT 的托盘菜单
+        // 是 Chrome_WidgetWin_1 + WS_EX_TOPMOST 且无 owner、无 WS_POPUP，
+        // 仅靠前几条规则会漏掉。主窗口一般不是 topmost，且尺寸/距离过滤兜底。
+        let is_topmost_popup = exstyle & WS_EX_TOPMOST.0 != 0;
+        if !(is_menu || is_chrome_popup || is_tool_window || is_owned_popup || is_topmost_popup) {
+            return None;
+        }
+
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
+        }
+        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+        if w < POPUP_MIN_SIZE
+            || h < POPUP_MIN_SIZE
+            || w > POPUP_MAX_SIZE
+            || h > POPUP_MAX_SIZE
+        {
+            return None;
+        }
+        // 距托盘点击点的距离：应用浮层/菜单通常就出现在托盘上方，
+        // 这样可把同时冒出来的无关窗口排除掉。仅 topmost 兜底规则需要
+        // 更严格的近距限制（菜单/有 owner 浮层可能出现在别处，不限）。
+        let dx = ((rect.left + rect.right) / 2 - tray_point.0) as i64;
+        let dy = ((rect.top + rect.bottom) / 2 - tray_point.1) as i64;
+        let dist2 = dx * dx + dy * dy;
+        let owned_like = is_menu || is_chrome_popup || is_tool_window || is_owned_popup;
+        if !owned_like && dist2 > 900 * 900 {
+            return None;
+        }
+        let priority = if is_menu {
+            3
+        } else if is_chrome_popup {
+            2
+        } else if owned_like {
+            1
+        } else {
+            0
+        };
+        Some((priority, dist2))
+    }
+}
+
+/// 把点击后新出现/由隐转显的弹窗移动到顶栏图标下方。
+/// `before` 为点击前快照；`anchor_x` 为顶栏图标中心 x；`tray_point` 为原生托盘点击点。
+/// 返回被移动的窗口句柄；没有可迁移弹窗时返回 None。
+pub fn relocate_popup(before: &[isize], anchor_x: i32, tray_point: (i32, i32)) -> Option<isize> {
+    let own_pid = unsafe { GetCurrentProcessId() };
+
+    // 弹窗不一定是点击后立刻出现（QQ 的应用浮层要几百毫秒），
+    // 这里最多轮询 ~1.2s，找到候选即停
+    let deadline = Instant::now() + Duration::from_millis(1200);
+    let mut chosen: Option<(isize, i32)> = None;
+    loop {
+        let current = snapshot_windows();
+        let mut best: Option<(isize, i32, i64)> = None;
+        for &h in &current {
+            if before.contains(&h) {
+                continue; // 点击前就存在（含"一直可见"）
+            }
+            let hwnd = HWND(h as *mut _);
+            let Some((prio, dist)) = popup_score(hwnd, own_pid, tray_point) else {
+                continue;
+            };
+            let better = match best {
+                None => true,
+                Some((_, bp, bd)) => prio > bp || (prio == bp && dist < bd),
+            };
+            if better {
+                best = Some((h, prio, dist));
+            }
+        }
+        if let Some((h, prio, _)) = best {
+            chosen = Some((h, prio));
+            break;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+
+    let (handle, priority) = chosen?;
+    let hwnd = HWND(handle as *mut _);
+    // 菜单类浮层创建后尺寸还会继续变化，稍等再取最终矩形
+    if priority >= 2 {
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    let rect = window_rect(hwnd)?;
+    if !move_popup(hwnd, rect, anchor_x, tray_point) {
+        return None;
+    }
+    // 部分应用会立刻把自己挪回去：250ms 后按（可能已变化的）尺寸再校正一次
+    std::thread::sleep(Duration::from_millis(250));
+    if let Some(rect2) = window_rect(hwnd) {
+        let _ = move_popup(hwnd, rect2, anchor_x, tray_point);
+    }
+    Some(handle)
+}
+
+fn window_rect(hwnd: HWND) -> Option<RECT> {
+    unsafe {
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
+        }
+        if rect.right - rect.left <= 0 || rect.bottom - rect.top <= 0 {
+            return None;
+        }
+        Some(rect)
+    }
+}
+
+/// 把弹窗移到屏幕顶部、顶栏图标正下方（水平居中并夹取在显示器内）
+fn move_popup(hwnd: HWND, rect: RECT, anchor_x: i32, tray_point: (i32, i32)) -> bool {
+    let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+    let monitor = monitor_rect_at(tray_point.0, tray_point.1);
+    let y = (TOPBAR_OFFSET_LOGICAL * dpi_scale(hwnd)).round() as i32;
+    let min_x = monitor.left + 4;
+    let max_x = (monitor.right - w - 4).max(min_x);
+    let x = (anchor_x - w / 2).clamp(min_x, max_x);
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            x,
+            y,
+            w,
+            h,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .is_ok()
+    }
+}
+
+/// 指定屏幕坐标所在显示器的矩形（物理像素）
+fn monitor_rect_at(x: i32, y: i32) -> RECT {
+    unsafe {
+        let hmon = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(hmon, &mut mi).as_bool() {
+            mi.rcMonitor
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080,
+            }
+        }
+    }
+}
+
+/// 窗口所在显示器的缩放比例（96 DPI = 1.0）；拿不到时按 100% 处理
+fn dpi_scale(hwnd: HWND) -> f32 {
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        1.0
+    } else {
+        dpi as f32 / 96.0
+    }
 }

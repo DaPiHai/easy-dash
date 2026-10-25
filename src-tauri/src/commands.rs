@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::config;
-use crate::types::{NotificationItem, QuickState, TrayItem};
+use crate::types::{BtDevice, MediaInfo, NotificationItem, QuickState, TrayItem, WifiNetwork};
 use crate::winapi;
 
 /// 顶栏常态高度（逻辑像素）
@@ -243,7 +243,8 @@ pub fn refresh_tray(app: AppHandle) {
     crate::tray_mirror::request_refresh(&app);
 }
 
-/// 点击托盘中第 index 个条目：转发为任务栏托盘上的真实鼠标点击。
+/// 点击托盘中第 index 个条目：转发为任务栏托盘上的真实鼠标点击，
+/// 并把点击后新出现的应用弹窗迁移到顶栏图标下方（避免浮层出现在原生托盘位置）。
 /// Dock 可能比任务栏更宽而盖住托盘区域，点击期间临时让 Dock 指针穿透。
 #[tauri::command]
 pub fn tray_click(
@@ -251,6 +252,8 @@ pub fn tray_click(
     state: State<AppState>,
     index: usize,
     button: String,
+    // 顶栏图标中心 x（逻辑像素，窗口位于 0,0）；缺省时退回原生托盘位置
+    anchor_x: Option<i32>,
 ) -> Result<(), String> {
     let item = {
         let tray = state.tray.lock().unwrap();
@@ -261,18 +264,23 @@ pub fn tray_click(
         _ => "left",
     }
     .to_string();
+    let native_cx = item.x + item.w / 2;
+    let anchor = anchor_x.unwrap_or(native_cx);
     let app2 = app.clone();
     std::thread::spawn(move || {
+        let before = winapi::tray::snapshot_windows();
         if let Some(dock) = app2.get_webview_window("dock") {
             let _ = dock.set_ignore_cursor_events(true);
         }
-        let cx = item.x + item.w / 2;
+        let cx = native_cx;
         let cy = item.y + item.h / 2;
         let _ = winapi::tray::click_at(cx, cy, &button);
         std::thread::sleep(std::time::Duration::from_millis(150));
         if let Some(dock) = app2.get_webview_window("dock") {
             let _ = dock.set_ignore_cursor_events(false);
         }
+        // 迁移应用弹出的菜单/浮层到顶栏图标下方（识别不到时保持原生位置）
+        let _ = winapi::tray::relocate_popup(&before, anchor, (cx, cy));
     });
     Ok(())
 }
@@ -371,4 +379,90 @@ pub async fn set_power_mode(mode: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn power_action(action: String) -> Result<(), String> {
     blocking(move || crate::controls::power_action(&action)).await
+}
+
+// ==================== 通知中心：媒体播放 / 控制中心：Wi-Fi 与蓝牙连接 ====================
+
+/// 当前媒体播放状态（Windows SMTC）；没有会话时为 None。
+#[tauri::command]
+pub async fn get_media_state() -> Result<Option<MediaInfo>, String> {
+    blocking(|| {
+        crate::controls::ensure_com();
+        Ok(winapi::media::state())
+    })
+    .await
+}
+
+/// 媒体控制："toggle" | "prev" | "next"
+#[tauri::command]
+pub async fn media_action(action: String) -> Result<bool, String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        winapi::media::action(&action)
+    })
+    .await
+}
+
+/// 周边 Wi-Fi 网络列表（force_scan=true 时先触发 WlanScan）。
+#[tauri::command]
+pub async fn get_wifi_networks(force_scan: bool) -> Result<Vec<WifiNetwork>, String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        winapi::wifi::networks(force_scan)
+    })
+    .await
+}
+
+/// 连接 Wi-Fi；已保存的网络可省略密码。
+#[tauri::command]
+pub async fn connect_wifi(ssid: String, password: Option<String>) -> Result<(), String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        winapi::wifi::connect(&ssid, password.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn disconnect_wifi() -> Result<(), String> {
+    blocking(|| {
+        crate::controls::ensure_com();
+        winapi::wifi::disconnect()
+    })
+    .await
+}
+
+/// 已配对蓝牙设备列表。
+#[tauri::command]
+pub async fn get_bt_devices() -> Result<Vec<BtDevice>, String> {
+    blocking(|| {
+        crate::controls::ensure_com();
+        Ok(winapi::bt::devices())
+    })
+    .await
+}
+
+/// 连接 / 断开指定蓝牙设备（地址为 48bit 数值）。
+#[tauri::command]
+pub async fn set_bt_connected(address: u64, connect: bool) -> Result<(), String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        winapi::bt::set_connected(address, connect)
+    })
+    .await
+}
+
+/// 打开指定 Windows 设置页（network-wifi / bluetooth / network / default）。
+#[tauri::command]
+pub async fn open_settings_page(page: String) -> Result<(), String> {
+    blocking(move || {
+        let uri = match page.as_str() {
+            "network-wifi" => "ms-settings:network-wifi",
+            "bluetooth" => "ms-settings:bluetooth",
+            "network" => "ms-settings:network",
+            _ => "ms-settings:",
+        };
+        winapi::launcher::launch(uri, "")
+    })
+    .await
 }

@@ -1,50 +1,73 @@
-// 控制中心面板：磁贴网格（Wi-Fi/蓝牙/飞行模式/深色模式）+ 音量/亮度滑条
+// 控制中心面板：磁贴网格（Wi-Fi/蓝牙/飞行模式/深色模式）+ 连接入口 + 音量/亮度滑条
 // + 电源模式三档 + 电池行与电源动作。
+// 连接入口点击后切到由 connections.js 渲染的子视图（Wi-Fi 网络 / 蓝牙设备）。
 // 操作全部「乐观更新 + 面板打开时每 2s 轮询 get_quick_state 纠偏」。
 import { invoke, invokeRetry } from "./api.js";
+import { createConnections } from "./connections.js";
 
 const PANEL_HTML = `
   <div class="cc-error hidden" id="cc-error"></div>
-  <div class="cc-grid">
-    <button class="cc-tile" id="cc-wifi" type="button">
-      <span class="cc-tile-icon" id="cc-wifi-icon"></span>
-      <span class="cc-tile-name">Wi-Fi</span>
-      <span class="cc-tile-sub" id="cc-wifi-sub">--</span>
-    </button>
-    <button class="cc-tile" id="cc-bt" type="button">
-      <span class="cc-tile-icon" id="cc-bt-icon"></span>
-      <span class="cc-tile-name">蓝牙</span>
-      <span class="cc-tile-sub" id="cc-bt-sub">--</span>
-    </button>
-    <button class="cc-tile" id="cc-airplane" type="button">
-      <span class="cc-tile-icon" id="cc-airplane-icon"></span>
-      <span class="cc-tile-name">飞行模式</span>
-      <span class="cc-tile-sub" id="cc-airplane-sub">--</span>
-    </button>
-    <button class="cc-tile" id="cc-dark" type="button">
-      <span class="cc-tile-icon" id="cc-dark-icon"></span>
-      <span class="cc-tile-name">深色模式</span>
-      <span class="cc-tile-sub" id="cc-dark-sub">--</span>
-    </button>
-  </div>
-  <div class="cc-rows">
-    <div class="cc-slider-row">
-      <span class="cc-sl-icon" id="cc-vol-icon"></span>
-      <input class="cc-slider" id="cc-volume" type="range" min="0" max="100" step="1" value="50" />
-      <span class="cc-pct" id="cc-volume-pct">--</span>
-      <button class="cc-mute" id="cc-mute" type="button" title="静音"></button>
+  <div class="cc-main" id="cc-main">
+    <div class="cc-grid">
+      <button class="cc-tile" id="cc-wifi" type="button">
+        <span class="cc-tile-icon" id="cc-wifi-icon"></span>
+        <span class="cc-tile-name">Wi-Fi</span>
+        <span class="cc-tile-sub" id="cc-wifi-sub">--</span>
+      </button>
+      <button class="cc-tile" id="cc-bt" type="button">
+        <span class="cc-tile-icon" id="cc-bt-icon"></span>
+        <span class="cc-tile-name">蓝牙</span>
+        <span class="cc-tile-sub" id="cc-bt-sub">--</span>
+      </button>
+      <button class="cc-tile" id="cc-airplane" type="button">
+        <span class="cc-tile-icon" id="cc-airplane-icon"></span>
+        <span class="cc-tile-name">飞行模式</span>
+        <span class="cc-tile-sub" id="cc-airplane-sub">--</span>
+      </button>
+      <button class="cc-tile" id="cc-dark" type="button">
+        <span class="cc-tile-icon" id="cc-dark-icon"></span>
+        <span class="cc-tile-name">深色模式</span>
+        <span class="cc-tile-sub" id="cc-dark-sub">--</span>
+      </button>
     </div>
-    <div class="cc-slider-row" id="cc-brightness-row">
-      <span class="cc-sl-icon" id="cc-sun-icon"></span>
-      <input class="cc-slider" id="cc-brightness" type="range" min="0" max="100" step="1" value="50" />
-      <span class="cc-pct" id="cc-brightness-pct">--</span>
+    <div class="cc-conns">
+      <button class="cc-conn" id="cc-wifi-row" type="button">
+        <span class="cc-conn-icon" id="cc-wifi-row-icon"></span>
+        <span class="cc-conn-main">
+          <span class="cc-conn-name">Wi-Fi</span>
+          <span class="cc-conn-sub" id="cc-wifi-row-sub">--</span>
+        </span>
+        <span class="cc-conn-arrow">›</span>
+      </button>
+      <button class="cc-conn" id="cc-bt-row" type="button">
+        <span class="cc-conn-icon" id="cc-bt-row-icon"></span>
+        <span class="cc-conn-main">
+          <span class="cc-conn-name">蓝牙</span>
+          <span class="cc-conn-sub" id="cc-bt-row-sub">--</span>
+        </span>
+        <span class="cc-conn-arrow">›</span>
+      </button>
+    </div>
+    <div class="cc-rows">
+      <div class="cc-slider-row">
+        <span class="cc-sl-icon" id="cc-vol-icon"></span>
+        <input class="cc-slider" id="cc-volume" type="range" min="0" max="100" step="1" value="50" />
+        <span class="cc-pct" id="cc-volume-pct">--</span>
+        <button class="cc-mute" id="cc-mute" type="button" title="静音"></button>
+      </div>
+      <div class="cc-slider-row" id="cc-brightness-row">
+        <span class="cc-sl-icon" id="cc-sun-icon"></span>
+        <input class="cc-slider" id="cc-brightness" type="range" min="0" max="100" step="1" value="50" />
+        <span class="cc-pct" id="cc-brightness-pct">--</span>
+      </div>
+    </div>
+    <div class="cc-seg" id="cc-power">
+      <button type="button" data-mode="efficiency">节能</button>
+      <button type="button" data-mode="balanced">平衡</button>
+      <button type="button" data-mode="performance">高性能</button>
     </div>
   </div>
-  <div class="cc-seg" id="cc-power">
-    <button type="button" data-mode="efficiency">节能</button>
-    <button type="button" data-mode="balanced">平衡</button>
-    <button type="button" data-mode="performance">高性能</button>
-  </div>
+  <div class="cc-sub hidden" id="cc-sub"></div>
   <div class="cc-battery">
     <span class="cc-bat-icon"><span class="cc-bat-fill" id="cc-bat-fill"></span></span>
     <span class="cc-bat-text" id="cc-bat-text">电量未知</span>
@@ -137,6 +160,7 @@ export function createControlCenterPanel({ onState } = {}) {
   let panelOpen = false;
   let loadedOnce = false;
   let pollTimer = null;
+  let btTimer = null;
   let errorTimer = null;
   let correctTimer = null;
   let volumeTimer = null;
@@ -146,10 +170,15 @@ export function createControlCenterPanel({ onState } = {}) {
   let volumeHeld = false; // 滑条按住期间不让轮询结果覆盖
   let brightnessHeld = false;
   let confirmState = null; // 关机/重启的 3 秒二次确认
+  let subKind = null; // null | "wifi" | "bluetooth"
+  let btCount = 0; // 已连接蓝牙设备数（连接入口摘要用）
+  let connections = null;
   const emitState = typeof onState === "function" ? onState : () => {};
 
   // DOM 引用（innerHTML 之后才可用）
   let errEl = null;
+  let mainEl = null;
+  let subEl = null;
   let wifiTile = null;
   let wifiIcon = null;
   let wifiSub = null;
@@ -159,6 +188,10 @@ export function createControlCenterPanel({ onState } = {}) {
   let airplaneSub = null;
   let darkTile = null;
   let darkSub = null;
+  let wifiRowIcon = null;
+  let wifiRowSub = null;
+  let btRowIcon = null;
+  let btRowSub = null;
   let volIcon = null;
   let volumeSlider = null;
   let volumePct = null;
@@ -175,6 +208,7 @@ export function createControlCenterPanel({ onState } = {}) {
   if (el) {
     el.innerHTML = PANEL_HTML;
     collectRefs();
+    setupConnections();
     bindDom();
     setStaticIcons();
   }
@@ -183,6 +217,8 @@ export function createControlCenterPanel({ onState } = {}) {
 
   function collectRefs() {
     errEl = document.getElementById("cc-error");
+    mainEl = document.getElementById("cc-main");
+    subEl = document.getElementById("cc-sub");
     wifiTile = document.getElementById("cc-wifi");
     wifiIcon = document.getElementById("cc-wifi-icon");
     wifiSub = document.getElementById("cc-wifi-sub");
@@ -192,6 +228,10 @@ export function createControlCenterPanel({ onState } = {}) {
     airplaneSub = document.getElementById("cc-airplane-sub");
     darkTile = document.getElementById("cc-dark");
     darkSub = document.getElementById("cc-dark-sub");
+    wifiRowIcon = document.getElementById("cc-wifi-row-icon");
+    wifiRowSub = document.getElementById("cc-wifi-row-sub");
+    btRowIcon = document.getElementById("cc-bt-row-icon");
+    btRowSub = document.getElementById("cc-bt-row-sub");
     volIcon = document.getElementById("cc-vol-icon");
     volumeSlider = document.getElementById("cc-volume");
     volumePct = document.getElementById("cc-volume-pct");
@@ -206,6 +246,21 @@ export function createControlCenterPanel({ onState } = {}) {
     powerMenu = document.getElementById("cc-power-menu");
   }
 
+  /** 连接子视图：渲染、错误、刷新职责都交给 connections.js */
+  function setupConnections() {
+    if (!subEl) return;
+    connections = createConnections({
+      host: subEl,
+      onError: (msg) => showError(msg),
+      onChanged: () => {
+        // 连接状态变化：刷新聚合状态与设备计数
+        refresh({ silent: true });
+        loadBtCount();
+      },
+      onBack: () => backToMain(),
+    });
+  }
+
   function setStaticIcons() {
     const btIcon = document.getElementById("cc-bt-icon");
     const airplaneIcon = document.getElementById("cc-airplane-icon");
@@ -218,6 +273,8 @@ export function createControlCenterPanel({ onState } = {}) {
     if (sunIcon) sunIcon.innerHTML = ICONS.sun;
     if (volIcon) volIcon.innerHTML = ICONS.volume;
     if (muteBtn) muteBtn.innerHTML = ICONS.volume;
+    if (wifiRowIcon) wifiRowIcon.innerHTML = ICONS.wifi;
+    if (btRowIcon) btRowIcon.innerHTML = ICONS.bluetooth;
   }
 
   function bindDom() {
@@ -225,6 +282,11 @@ export function createControlCenterPanel({ onState } = {}) {
     if (btTile) btTile.addEventListener("click", onBluetoothClick);
     if (airplaneTile) airplaneTile.addEventListener("click", onAirplaneClick);
     if (darkTile) darkTile.addEventListener("click", onDarkClick);
+
+    const wifiRow = document.getElementById("cc-wifi-row");
+    const btRow = document.getElementById("cc-bt-row");
+    if (wifiRow) wifiRow.addEventListener("click", () => setSubView("wifi"));
+    if (btRow) btRow.addEventListener("click", () => setSubView("bluetooth"));
 
     if (volumeSlider) {
       volumeSlider.addEventListener("input", onVolumeInput);
@@ -290,6 +352,28 @@ export function createControlCenterPanel({ onState } = {}) {
     });
   }
 
+  // ---------- 子视图切换 ----------
+
+  /** kind = "wifi" | "bluetooth" | null（null 回默认视图） */
+  function setSubView(kind) {
+    subKind = kind || null;
+    if (subKind) {
+      if (mainEl) mainEl.classList.add("hidden");
+      if (subEl) subEl.classList.remove("hidden");
+      if (connections) connections.open(subKind);
+    } else {
+      if (connections) connections.close();
+      if (subEl) subEl.classList.add("hidden");
+      if (mainEl) mainEl.classList.remove("hidden");
+    }
+  }
+
+  function backToMain() {
+    setSubView(null);
+    refresh({ silent: true });
+    loadBtCount();
+  }
+
   // ---------- 状态刷新 ----------
 
   async function refresh(opts) {
@@ -311,15 +395,40 @@ export function createControlCenterPanel({ onState } = {}) {
     }
   }
 
+  /** 已连接蓝牙设备数（连接入口摘要「已连接 N 台」） */
+  async function loadBtCount() {
+    if (!enabled) return;
+    if (state && state.bluetooth !== true) {
+      btCount = 0;
+      renderConnRows();
+      return;
+    }
+    try {
+      const list = await invoke("get_bt_devices");
+      if (!enabled) return;
+      const arr = Array.isArray(list) ? list : [];
+      btCount = arr.filter((d) => d && d.connected).length;
+    } catch (e) {
+      btCount = 0;
+    }
+    renderConnRows();
+  }
+
   function syncTimer() {
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
     }
+    if (btTimer) {
+      clearInterval(btTimer);
+      btTimer = null;
+    }
     if (!enabled) return;
     // 面板打开：2s 纠偏；关闭：20s 仅同步顶栏聚合图标
     const period = panelOpen ? 2000 : 20000;
     pollTimer = setInterval(() => refresh({ silent: !panelOpen }), period);
+    // 连接入口的蓝牙计数（设备可能自行连接/断开）
+    if (panelOpen) btTimer = setInterval(() => loadBtCount(), 20000);
   }
 
   // ---------- 渲染 ----------
@@ -347,6 +456,29 @@ export function createControlCenterPanel({ onState } = {}) {
     const wifiOff = !state.wifi || state.wifi.enabled === false;
     const btOff = state.bluetooth === false || state.bluetooth === null || state.bluetooth === undefined;
     return wifiOff && btOff;
+  }
+
+  /** 两个连接入口行的摘要 */
+  function renderConnRows() {
+    const s = state;
+    if (wifiRowSub) {
+      if (!s) wifiRowSub.textContent = "--";
+      else if (!s.wifi) wifiRowSub.textContent = "不可用";
+      else if (s.wifi.connected) wifiRowSub.textContent = "已连接 " + (s.wifi.ssid || "");
+      else if (s.wifi.enabled) wifiRowSub.textContent = "未连接";
+      else wifiRowSub.textContent = "已关闭";
+    }
+    if (btRowSub) {
+      if (!s) btRowSub.textContent = "--";
+      else if (s.bluetooth === null || s.bluetooth === undefined) btRowSub.textContent = "不可用";
+      else if (!s.bluetooth) btRowSub.textContent = "已关闭";
+      else btRowSub.textContent = btCount > 0 ? "已连接 " + btCount + " 台" : "已开启";
+    }
+    if (wifiRowIcon) {
+      const on = !!(s && s.wifi && s.wifi.enabled);
+      wifiRowIcon.innerHTML = on ? ICONS.wifi : ICONS.wifiOff;
+    }
+    if (btRowIcon) btRowIcon.innerHTML = ICONS.bluetooth;
   }
 
   function render() {
@@ -426,6 +558,9 @@ export function createControlCenterPanel({ onState } = {}) {
       for (const b of buttons) b.classList.toggle("active", b.dataset.mode === s.powerMode);
     }
 
+    // 连接入口摘要
+    renderConnRows();
+
     // 电池行
     if (batText) {
       if (s.battery !== null && s.battery !== undefined) {
@@ -497,6 +632,8 @@ export function createControlCenterPanel({ onState } = {}) {
     };
     render();
     runAction(() => invoke("set_wifi", { enabled: next }));
+    // Wi-Fi 开关会影响蓝牙计数摘要的可用性
+    setTimeout(() => loadBtCount(), 600);
   }
 
   function onBluetoothClick() {
@@ -511,6 +648,7 @@ export function createControlCenterPanel({ onState } = {}) {
     state.bluetooth = next;
     render();
     runAction(() => invoke("set_bluetooth", { enabled: next }));
+    setTimeout(() => loadBtCount(), 600);
   }
 
   function onAirplaneClick() {
@@ -536,6 +674,7 @@ export function createControlCenterPanel({ onState } = {}) {
     if (hasWifi) jobs.push(() => invoke("set_wifi", { enabled: !next }));
     if (hasBt) jobs.push(() => invoke("set_bluetooth", { enabled: !next }));
     runAll(jobs);
+    setTimeout(() => loadBtCount(), 800);
   }
 
   function onDarkClick() {
@@ -737,11 +876,15 @@ export function createControlCenterPanel({ onState } = {}) {
       if (!el) return;
       panelOpen = true;
       hideError();
+      // 每次打开都回到默认视图（连接子视图不保留）
+      if (subKind) setSubView(null);
       syncTimer();
       refresh({ silent: false });
+      loadBtCount();
     },
     onClose() {
       panelOpen = false;
+      setSubView(null);
       hidePowerMenu();
       hideError();
       syncTimer();
@@ -755,13 +898,16 @@ export function createControlCenterPanel({ onState } = {}) {
       enabled = next;
       if (!enabled) {
         panelOpen = false;
+        setSubView(null);
         hidePowerMenu();
         hideError();
         syncTimer();
         state = null;
+        btCount = 0;
       } else {
         syncTimer();
         refresh({ silent: true });
+        loadBtCount();
       }
     },
     isEnabled() {

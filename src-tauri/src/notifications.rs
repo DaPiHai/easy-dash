@@ -103,8 +103,18 @@ fn build_items(
         };
         let (app_name, app_icon) =
             resolve_identity(primary_id, handler_type, icon_cache, name_cache);
+        // 分组键：同一处理器的通知在通知中心里堆叠成一组
+        let app_key = {
+            let key = primary_id.trim();
+            if key.is_empty() {
+                "system".to_string()
+            } else {
+                key.to_string()
+            }
+        };
         items.push(NotificationItem {
             id: r.id,
+            app_key,
             app_name,
             app_icon,
             title,
@@ -117,7 +127,12 @@ fn build_items(
     Ok(items)
 }
 
-/// 解析条目的应用显示名与图标：命中缓存就不再做 Shell / 包清单调用。
+/// 解析条目的应用显示名与图标：命中缓存就不再做 Shell / 包清单 / 别名表查询。
+///
+/// 解析顺序：AUMID → 包清单（`aumid_app_info`）；exe 路径 → 文件图标
+/// （`file_icon_data_url`）；其它处理器标识（"QQ"、"dev.zcode.app"）→
+/// `app_icons::resolve_identity`（托盘 IconSnapshot / 别名表）；都失败则
+/// 回落 `app_name_from` + 字母占位（icon=None，由前端绘制首字母）。
 fn resolve_identity(
     primary_id: &str,
     handler_type: &str,
@@ -144,8 +159,18 @@ fn resolve_identity(
         } else if looks_like_path(key) {
             winapi::icons::file_icon_data_url(key)
         } else {
-            // "QQ" 这类只有处理器名、没有可执行文件路径：前端用字母占位
-            None
+            // 只有处理器标识（如 "QQ"、"dev.zcode.app"）：交给 app_icons 从
+            // 托盘 IconSnapshot / 别名表解析真实图标与本地化显示名
+            match winapi::app_icons::resolve_identity(key) {
+                Some(identity) => {
+                    let disp = identity.name.trim();
+                    if !disp.is_empty() {
+                        name_cache.insert(key.to_string(), disp.to_string());
+                    }
+                    identity.icon
+                }
+                None => None, // 未命中：保持字母占位
+            }
         };
         // 简单限长：满了整体清空，实现简单且不会无限增长
         if icon_cache.len() >= ICON_CACHE_MAX {
@@ -155,7 +180,7 @@ fn resolve_identity(
         icon
     };
 
-    // 包清单里的显示名（如「设置」）比 AUMID 前缀可读，优先使用
+    // 包清单 / app_icons 给出的显示名比原始标识可读，优先使用
     if let Some(disp) = name_cache.get(key) {
         if !disp.trim().is_empty() {
             name = disp.clone();
@@ -593,5 +618,33 @@ mod tests {
         assert_eq!(app_name_from("   ", ""), "系统");
         // 以目录分隔符结尾：rsplit 得到空文件名 → 系统
         assert_eq!(app_name_from("C:\\dir\\", "app:desktop"), "系统");
+    }
+
+    /// 真实跑一遍「读库 → 解析 toast → 应用名/图标」流水线：
+    /// 验证 app_icons 接入后能拿到 QQ / ZCode 的真实图标与显示名。
+    /// 默认 `#[ignore]`（依赖本机通知历史与已安装应用）。
+    /// 手动验证：`cargo test --manifest-path src-tauri/Cargo.toml --lib -- --ignored --nocapture`
+    #[test]
+    #[ignore = "依赖本机 Windows 通知历史，手动执行"]
+    fn smoke_build_items() {
+        // 与工作线程一样先初始化 STA + COM（图标提取需要）
+        crate::winapi::icons::ensure_com();
+        let mut icon_cache = HashMap::new();
+        let mut name_cache = HashMap::new();
+        let items = build_items(&mut icon_cache, &mut name_cache).expect("读取本机通知应成功");
+        eprintln!("[smoke] notification items={}", items.len());
+        for it in items.iter().take(8) {
+            eprintln!(
+                "[smoke] id={} app_key={:?} app_name={:?} icon_len={} title={:?}",
+                it.id,
+                it.app_key,
+                it.app_name,
+                it.app_icon.as_ref().map(|u| u.len()).unwrap_or(0),
+                it.title
+            );
+        }
+        assert!(!items.is_empty(), "本机通知历史应至少解析出一条");
+        // 分组键必须非空（空则前端无法按应用堆叠）
+        assert!(items.iter().all(|it| !it.app_key.trim().is_empty()));
     }
 }

@@ -13,5 +13,6 @@ src-tauri/gen/schemas/
 
 # ── 工具/编辑器状态 ──
 .zcode/
+.playwright-mcp/
 .DS_Store
 Thumbs.db
