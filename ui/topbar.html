@@ -2,30 +2,68 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <meta name="color-scheme" content="dark" />
   <link rel="stylesheet" href="css/shared.css" />
   <link rel="stylesheet" href="css/topbar.css" />
 </head>
 <body>
+  <!-- 顶栏本体：固定 32px 高，窗口被拉高后下方区域留给面板 -->
   <div class="topbar" id="topbar">
-    <button id="activities" class="activities" title="打开活动概览">活动</button>
-    <div class="center">
-      <span id="date"></span>
-      <span id="clock"></span>
-    </div>
+    <button id="activities" class="activities" type="button" title="打开活动概览">活动</button>
+
+    <!-- 中间：日期 + 时钟（点击开关通知中心） -->
+    <button id="clock-btn" class="clock-btn" type="button" title="通知中心">
+      <span id="date" class="clock-date"></span>
+      <span id="clock" class="clock-time"></span>
+      <span id="unread-dot" class="unread-dot hidden"></span>
+    </button>
+
     <div class="right">
-      <span id="net" class="stat" title="网络"></span>
-      <span id="volume" class="stat" title="音量">
-        <svg width="16" height="16" viewBox="0 0 16 16">
-          <path d="M2.5 6h2.4L8.6 3v10L4.9 10H2.5z" fill="#fff"/>
-          <path d="M10.8 5.6a3.4 3.4 0 0 1 0 4.8" stroke="#fff" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-        </svg>
-      </span>
-      <span id="battery" class="stat battery" title="电池">
-        <span class="bat-icon"><span class="bat-fill" id="bat-fill"></span></span>
-        <span class="bat-pct" id="bat-pct"></span>
-      </span>
+      <!-- 任务托盘镜像（内容由 js/tray.js 渲染） -->
+      <div id="tray" class="tray"></div>
+      <!-- 右侧：网络/音量/电池聚合图标 + 展开箭头（点击开关控制中心） -->
+      <button id="cc-btn" class="cc-btn" type="button" title="控制中心">
+        <span id="cc-icons" class="cc-icons"></span>
+        <span class="cc-arrow">▾</span>
+      </button>
     </div>
   </div>
+
+  <!-- 通知中心面板（内容由 js/notifications.js 渲染） -->
+  <div id="panel-notifications" class="panel panel-notifications hidden"></div>
+
+  <!-- 控制中心面板（内容由 js/control-center.js 渲染） -->
+  <div id="panel-control" class="panel panel-control hidden"></div>
+
+  <!-- 托盘 hover 提示 -->
+  <div id="tooltip" class="tooltip hidden"></div>
+
+  <script>
+    // 独立于模块的错误捕获：模块脚本语法/加载失败也能把原因显示出来
+    (function () {
+      function show(msg) {
+        try {
+          var b = document.getElementById("boot-err") || document.createElement("div");
+          b.id = "boot-err";
+          b.style.cssText =
+            "position:fixed;bottom:4px;left:50%;transform:translateX(-50%);" +
+            "background:rgba(192,28,40,.92);color:#fff;font-size:11px;padding:3px 10px;" +
+            "border-radius:8px;max-width:90vw;overflow:hidden;white-space:nowrap;z-index:999";
+          b.textContent = "顶栏启动失败: " + msg;
+          document.body.appendChild(b);
+        } catch (e) {}
+      }
+      window.addEventListener("error", function (e) {
+        show(
+          (e.message || "脚本错误") +
+            (e.filename ? " @ " + e.filename.split("/").pop() + ":" + e.lineno : "")
+        );
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        show("Promise: " + ((e.reason && (e.reason.message || e.reason)) || "unknown"));
+      });
+    })();
+  </script>
   <script type="module" src="js/topbar.js"></script>
 </body>
 </html>

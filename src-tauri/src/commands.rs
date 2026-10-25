@@ -3,7 +3,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::config;
+use crate::types::{NotificationItem, QuickState, TrayItem};
 use crate::winapi;
+
+/// 顶栏常态高度（逻辑像素）
+const BAR_H: f64 = 32.0;
 
 #[tauri::command]
 pub fn list_windows(state: State<AppState>) -> Vec<winapi::enumerate::WinEntry> {
@@ -195,4 +199,176 @@ pub fn resize_dock(app: AppHandle, width: f64, height: f64) {
             ));
         }
     }
+}
+
+// ==================== 顶栏面板 / 任务托盘 / 通知中心 / 控制中心 ====================
+
+/// 顶栏窗口高度（逻辑像素）：32 = 常态；>32 = 面板展开。
+/// 展开期间 monitor 的 AppBar 周期校正会让路（见 monitor.rs）。
+#[tauri::command]
+pub fn resize_topbar(app: AppHandle, state: State<AppState>, height: f64) {
+    use tauri::{LogicalPosition, LogicalSize};
+    if let Some(tb) = app.get_webview_window("topbar") {
+        if let Ok(Some(m)) = app.primary_monitor() {
+            let scale = m.scale_factor();
+            let sw = m.size().width as f64 / scale;
+            let sh = m.size().height as f64 / scale;
+            let h = height.max(BAR_H).min(sh);
+            let _ = tb.set_size(LogicalSize::new(sw, h));
+            let _ = tb.set_position(LogicalPosition::new(0.0, 0.0));
+            state
+                .topbar_panel_open
+                .store(h > BAR_H + 0.5, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// 面板展开后把焦点给顶栏（保证 Esc 可用）
+#[tauri::command]
+pub fn focus_topbar(app: AppHandle) {
+    if let Some(tb) = app.get_webview_window("topbar") {
+        let _ = tb.set_focus();
+    }
+}
+
+/// 当前托盘镜像条目（缓存，含 PNG 图标）
+#[tauri::command]
+pub fn get_tray_items(state: State<AppState>) -> Vec<TrayItem> {
+    state.tray.lock().unwrap().clone()
+}
+
+/// 请求刷新托盘（非阻塞，工作线程完成后发 tray-changed）
+#[tauri::command]
+pub fn refresh_tray(app: AppHandle) {
+    crate::tray_mirror::request_refresh(&app);
+}
+
+/// 点击托盘中第 index 个条目：转发为任务栏托盘上的真实鼠标点击。
+/// Dock 可能比任务栏更宽而盖住托盘区域，点击期间临时让 Dock 指针穿透。
+#[tauri::command]
+pub fn tray_click(
+    app: AppHandle,
+    state: State<AppState>,
+    index: usize,
+    button: String,
+) -> Result<(), String> {
+    let item = {
+        let tray = state.tray.lock().unwrap();
+        tray.get(index).cloned().ok_or_else(|| "托盘项不存在".to_string())?
+    };
+    let button = match button.as_str() {
+        "right" => "right",
+        _ => "left",
+    }
+    .to_string();
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        if let Some(dock) = app2.get_webview_window("dock") {
+            let _ = dock.set_ignore_cursor_events(true);
+        }
+        let cx = item.x + item.w / 2;
+        let cy = item.y + item.h / 2;
+        let _ = winapi::tray::click_at(cx, cy, &button);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if let Some(dock) = app2.get_webview_window("dock") {
+            let _ = dock.set_ignore_cursor_events(false);
+        }
+    });
+    Ok(())
+}
+
+/// 打开 Windows 原生通知中心
+#[tauri::command]
+pub fn open_system_notification_center() {
+    std::thread::spawn(|| {
+        let _ = winapi::tray::open_system_notification_center();
+    });
+}
+
+/// 通知中心条目（缓存）
+#[tauri::command]
+pub fn get_notifications(state: State<AppState>) -> Vec<NotificationItem> {
+    state.notifications.lock().unwrap().clone()
+}
+
+/// 请求刷新通知（非阻塞，完成后发 notifications-changed）
+#[tauri::command]
+pub fn refresh_notifications(app: AppHandle) {
+    crate::notifications::request_refresh(&app);
+}
+
+/// 在 blocking 线程池执行可能阻塞的调用（COM / WinRT / DDC/CI 都在这里）
+async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("后台任务失败: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_quick_state() -> Result<QuickState, String> {
+    blocking(|| {
+        crate::controls::ensure_com();
+        Ok(crate::controls::quick_state())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_volume(value: u8) -> Result<(), String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        crate::controls::set_volume(value.min(100))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_muted(muted: bool) -> Result<(), String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        crate::controls::set_muted(muted)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_brightness(value: u32) -> Result<(), String> {
+    blocking(move || crate::controls::set_brightness(value.min(100))).await
+}
+
+#[tauri::command]
+pub async fn set_wifi(enabled: bool) -> Result<(), String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        crate::controls::set_wifi(enabled)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_bluetooth(enabled: bool) -> Result<(), String> {
+    blocking(move || {
+        crate::controls::ensure_com();
+        crate::controls::set_bluetooth(enabled)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_dark_mode(dark: bool) -> Result<(), String> {
+    blocking(move || crate::controls::set_dark_mode(dark)).await
+}
+
+#[tauri::command]
+pub async fn set_power_mode(mode: String) -> Result<(), String> {
+    blocking(move || crate::controls::set_power_mode(&mode)).await
+}
+
+#[tauri::command]
+pub async fn power_action(action: String) -> Result<(), String> {
+    blocking(move || crate::controls::power_action(&action)).await
 }

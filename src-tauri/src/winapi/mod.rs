@@ -1,9 +1,15 @@
 pub mod activate;
 pub mod appbar;
+pub mod brightness;
 pub mod common;
 pub mod enumerate;
 pub mod fullscreen;
 pub mod icons;
 pub mod launcher;
 pub mod power;
+pub mod radio;
 pub mod snapshot;
+pub mod theme;
+pub mod tray;
+pub mod volume;
+pub mod wifi;

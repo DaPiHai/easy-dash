@@ -1,13 +1,37 @@
+/* ============================================================
+   顶栏 + 通知中心 / 控制中心面板样式（GNOME 暗色风）
+   关键：.topbar 必须是固定 32px 高。窗口会被面板拉高（470/410），
+   若这里用 100vh，顶栏会跟着撑满整个窗口，面板就被挤没了。
+   ============================================================ */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+button:focus {
+  outline: none;
+}
+
+/* ==================== 顶栏 ==================== */
+
 .topbar {
-  position: relative;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px; /* 固定高度，不随窗口拉高而变 */
   display: flex;
   align-items: center;
-  height: 100vh;
-  padding: 0 10px;
+  gap: 6px;
+  padding: 0 8px;
   background: var(--panel-bg);
   border-bottom: 1px solid var(--panel-border);
+  z-index: 10;
   transition: transform 0.25s ease, opacity 0.25s ease;
-  z-index: 1;
 }
 
 body.hidden .topbar {
@@ -16,9 +40,16 @@ body.hidden .topbar {
   pointer-events: none;
 }
 
+/* 面板展开时顶栏与面板视觉上连成一体 */
+body.panel-open .topbar {
+  border-bottom-color: transparent;
+}
+
 .activities {
-  padding: 4px 14px;
-  border-radius: 14px;
+  flex: none;
+  height: 24px;
+  padding: 0 14px;
+  border-radius: 12px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
@@ -28,75 +59,779 @@ body.hidden .topbar {
   background: rgba(255, 255, 255, 0.14);
 }
 
-.center {
+/* 中间时钟按钮（通知中心入口） */
+.clock-btn {
   position: absolute;
   left: 50%;
+  top: 4px;
   transform: translateX(-50%);
   display: flex;
+  align-items: center;
   gap: 8px;
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 12px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  color: var(--text);
+  white-space: nowrap;
 }
 
+.clock-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.clock-btn:disabled {
+  opacity: 1;
+  color: var(--text);
+}
+
+.clock-date {
+  color: var(--text);
+  opacity: 0.92;
+}
+
+.clock-time {
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: center;
+}
+
+/* 未读小红点 */
+.unread-dot {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+/* 右侧组 */
 .right {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 4px;
+  flex: none;
 }
 
-.stat {
-  display: inline-flex;
+/* ==================== 任务托盘镜像 ==================== */
+
+.tray {
+  display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+}
+
+.tray-item {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tray-item:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.tray-item img {
+  display: block;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* 图标提取失败时的首字母占位 */
+.tray-letter {
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  pointer-events: none;
+}
+
+/* 「显示隐藏的图标」溢出按钮 */
+.tray-overflow {
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* ==================== 控制中心入口（聚合图标） ==================== */
+
+.cc-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 12px;
+}
+
+.cc-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.cc-icons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--text);
 }
 
-.battery {
-  gap: 5px;
+.cc-icons svg {
+  display: block;
 }
 
-.bat-icon {
+.cc-bat-icon {
   position: relative;
   display: inline-block;
+  flex: none;
   width: 20px;
   height: 10px;
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: 3px;
-  opacity: 0.95;
 }
 
-.bat-icon::after {
+.cc-bat-icon::after {
   content: "";
   position: absolute;
   right: -4px;
-  top: 1.5px;
+  top: 2px;
   width: 2px;
   height: 4px;
   background: rgba(255, 255, 255, 0.9);
   border-radius: 0 1px 1px 0;
 }
 
-.bat-fill {
+.cc-bat-fill {
   position: absolute;
   left: 1px;
   top: 1px;
   bottom: 1px;
+  width: 50%;
   background: rgba(255, 255, 255, 0.9);
   border-radius: 1.5px;
-  transition: width 0.4s ease, background 0.3s ease;
+  transition: width 0.3s ease, background 0.3s ease;
 }
 
-.bat-fill.low {
+.cc-bat-fill.low {
   background: var(--danger);
 }
 
-.bat-fill.charging {
+.cc-bat-fill.charging {
   background: var(--ok);
 }
 
-.bat-pct {
+.cc-bat-pct {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-arrow {
+  font-size: 9px;
+  opacity: 0.75;
+}
+
+/* ==================== 面板通用 ==================== */
+
+.panel {
+  /* 绝对定位：body 未定位，解析到视口，与窗口左上角对齐 */
+  position: absolute;
+  top: 32px;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  overflow: hidden;
+  z-index: 20;
+  animation: panel-fade 0.12s ease;
+}
+
+@keyframes panel-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 通知中心：居中 */
+.panel-notifications {
+  left: 50%;
+  transform: translateX(-50%);
+  width: 400px;
+  height: calc(100vh - 40px);
+}
+
+/* 控制中心：靠右 */
+.panel-control {
+  right: 8px;
+  width: 380px;
+  height: calc(100vh - 40px);
+}
+
+/* ==================== 通知中心内容 ==================== */
+
+.np-head {
+  flex: none;
+  text-align: center;
+  padding: 2px 0 6px;
+}
+
+.np-clock {
+  font-size: 34px;
+  font-weight: 300;
+  line-height: 1.1;
+  letter-spacing: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.np-date {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ---- 中文月历 ---- */
+
+.cal {
+  flex: none;
+  margin-top: 4px;
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.cal-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cal-nav {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+
+.cal-nav:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.cal-wd {
+  text-align: center;
+  padding: 2px 0;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.cal-day {
+  width: 20px;
+  height: 20px;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 前后月溢出日期淡化 */
+.cal-day.other {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* 今天 */
+.cal-day.today {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+/* ---- 通知列表 ---- */
+
+.np-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 8px;
+  padding-right: 2px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.np-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.np-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.np-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+}
+
+.np-item {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.np-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.np-icon {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.np-icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.np-letter {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.np-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.np-app {
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--text-dim);
+}
+
+.np-title {
+  margin-top: 1px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.np-body {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-dim);
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.np-time {
+  flex: none;
+  padding-top: 1px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+}
+
+.np-empty {
+  padding: 20px 8px;
+  text-align: center;
   font-size: 12px;
   color: var(--text-dim);
-  min-width: 26px;
+}
+
+/* ---- 底部按钮 ---- */
+
+.np-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.panel-btn {
+  flex: 1;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.panel-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.panel-btn:active {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* ==================== 控制中心内容 ==================== */
+
+.cc-error {
+  flex: none;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.cc-grid {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.cc-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+  min-height: 56px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid transparent;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.cc-tile:hover {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.cc-tile.on {
+  background: var(--accent);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.cc-tile.disabled {
+  opacity: 0.45;
+}
+
+.cc-tile-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.cc-tile.on .cc-tile-icon {
+  color: #fff;
+}
+
+.cc-tile-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cc-tile.on .cc-tile-name {
+  color: #fff;
+}
+
+.cc-tile-sub {
+  max-width: 100%;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-tile.on .cc-tile-sub {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* ---- 滑条 ---- */
+
+.cc-rows {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.cc-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px; /* 两行同高：亮度行没有静音按钮，避免被压扁 */
+}
+
+.cc-sl-icon {
+  flex: none;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.cc-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 2px;
+  outline: none;
+  background: transparent;
+}
+
+/* 轨道盒高 14px，用 background-size 画 4px 高的居中细条，滑块与轨道同高对齐 */
+.cc-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 14px;
+  border-radius: 7px;
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    var(--accent) var(--pct, 50%),
+    rgba(255, 255, 255, 0.18) var(--pct, 50%)
+  );
+  background-size: 100% 4px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.cc-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 0.5px; /* (14 - 13) / 2，让滑块在轨道上垂直居中 */
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.cc-slider:disabled {
+  opacity: 0.4;
+}
+
+.cc-pct {
+  flex: none;
+  width: 30px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-mute {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+}
+
+.cc-mute:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.cc-mute.on {
+  color: var(--danger);
+}
+
+/* ---- 电源模式三档 ---- */
+
+.cc-seg {
+  flex: none;
+  display: flex;
+  gap: 3px;
+  margin-top: 10px;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cc-seg button {
+  flex: 1;
+  height: 24px;
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.cc-seg button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.cc-seg button.active {
+  background: rgba(255, 255, 255, 0.22);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- 电池行 ---- */
+
+.cc-battery {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
+}
+
+.cc-bat-text {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-actions {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.cc-action {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cc-action:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.cc-action.open {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* ---- 电源菜单（睡眠/关机/重启/注销） ---- */
+
+.cc-power-menu {
+  position: absolute;
+  right: 10px;
+  bottom: 46px;
+  min-width: 116px;
+  padding: 5px;
+  background: rgba(36, 36, 38, 0.98);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 30;
+}
+
+.cc-power-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.cc-power-menu button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 关机/重启二次确认态 */
+.cc-power-menu button.confirm {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ==================== 托盘 hover 提示 ==================== */
+
+.tooltip {
+  position: fixed;
+  transform: translateX(-50%);
+  max-width: 320px;
+  padding: 4px 9px;
+  background: rgba(36, 36, 38, 0.96);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 60;
 }

@@ -20,6 +20,16 @@ pub struct Config {
     pub reserve_topbar_space: bool,
     /// 未固定应用的手动排序（窗口分组 key 列表）；不在列表中的按打开顺序排在后面
     pub dock_order: Vec<String>,
+    /// 顶栏任务托盘图标镜像（仅 Win11 XAML 任务栏可用）
+    pub tray_icons: bool,
+    /// 顶栏时钟 → 通知中心
+    pub notification_center: bool,
+    /// 顶栏右侧 → 控制中心
+    pub control_center: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -51,6 +61,9 @@ impl Default for Config {
             fullscreen_hide: true,
             reserve_topbar_space: true,
             dock_order: Vec::new(),
+            tray_icons: default_true(),
+            notification_center: default_true(),
+            control_center: default_true(),
         }
     }
 }

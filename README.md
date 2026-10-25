@@ -2,7 +2,10 @@
 
 轻量级 Windows 桌面美化工具，界面风格参考 GNOME：
 
-- **顶栏**：屏幕顶部通栏，含「活动」按钮、时钟日期、网络/音量/电池状态
+- **顶栏**：屏幕顶部通栏，含「活动」按钮、时钟日期、任务托盘镜像、网络/音量/电池状态
+- **通知中心**：点顶栏时钟展开，含大时钟 + 中文月历 + 最近系统通知（只读镜像 Windows 通知历史，带未读小红点）
+- **控制中心**：点顶栏右侧状态区展开，含 Wi-Fi / 蓝牙 / 飞行模式 / 深色模式开关、音量与亮度滑条、电源模式三档、设置/锁屏/睡眠/关机/重启/注销
+- **任务托盘镜像**：Windows 系统托盘图标实时同步到顶栏，左键/右键行为与直接点任务栏托盘一致
 - **Dock 栏**：底部居中胶囊应用栏，固定应用 + 运行指示点，悬停放大动效，右键固定/取消固定
 - **活动概览**：全屏概览所有打开的窗口（实时截图缩略图），点击切换，`Esc` 关闭
 - **全局热键**：`Alt+F1` 打开/关闭活动概览
@@ -15,7 +18,9 @@ Tauri 2（Rust + WebView2）+ 原生 HTML/CSS/JS（无前端框架、无打包�
 
 Win32 能力：窗口枚举过滤（DWM cloaked）、图标提取（WM_GETICON / SHGetFileInfo）、
 PrintWindow 窗口截图、AttachThreadInput 前台激活、ShellExecute 启动、
-AppBar 预留顶栏空间、全屏前台检测。
+AppBar 预留顶栏空间、全屏前台检测、UI Automation 托盘枚举（Win11 XAML 任务栏）、
+Core Audio 音量、DDC/CI 亮度、WLAN API 射频与 SSID、WinRT Radio 蓝牙、
+winsqlite3 只读通知库解析。
 
 ## 开发
 
@@ -35,7 +40,10 @@ npm run build        # 构建 release（NSIS 安装包）
   "pinned": [{ "name": "记事本", "path": "C:\\Windows\\System32\\notepad.exe", "args": "" }],
   "hotkey": "alt+f1",
   "fullscreenHide": true,
-  "reserveTopbarSpace": true
+  "reserveTopbarSpace": true,
+  "trayIcons": true,
+  "notificationCenter": true,
+  "controlCenter": true
 }
 ```
 
@@ -44,7 +52,11 @@ npm run build        # 构建 release（NSIS 安装包）
 ## 已知限制（v1）
 
 - 仅支持主显示器；窗口缩略图为打开概览时的静态截图（非实时）；最小化窗口回退到最后一次可见时缓存的画面
-- 音量图标为静态占位，不可调节
+- **任务托盘镜像 / 通知中心 / 控制中心依赖 Windows 11（XAML 任务栏 + UI Automation）**；不支持时托盘区自动隐藏（Win10 无此能力）
+- 通知中心是 Windows 通知历史的**只读镜像**：不能在 easy-dash 内删除系统通知（「清除全部」仅本地隐藏），也不含勿扰开关与媒体控制
+- 亮度滑条依赖显示器 DDC/CI；外接屏或部分机型不支持时自动隐藏
+- 蓝牙开关首次切换时系统可能弹出一次授权提示；任务栏设为自动隐藏时托盘图标可能取不到
+- 音量图标为状态显示，调节使用控制中心滑条
 - UWP 应用（如「设置」）固定到 Dock 时记录 AppsFolder 启动器，图标取自包清单
 - 原生任务栏仍然存在，如需完全 GNOME 化可在任务栏设置中开启自动隐藏
 - Dock 中的未固定应用按**窗口打开顺序**排列（不随聚焦变化）；UWP 应用失焦挂起后（DWM cloaked=2）仍保留在 Dock 中，其他虚拟桌面的窗口也会显示

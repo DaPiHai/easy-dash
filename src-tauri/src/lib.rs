@@ -1,9 +1,14 @@
 mod app_state;
 mod commands;
 mod config;
+mod controls;
 mod monitor;
+mod notifications;
+mod notify_db;
 mod overview;
 mod tray;
+mod tray_mirror;
+mod types;
 mod winapi;
 mod worker;
 
@@ -28,6 +33,23 @@ pub fn run() {
             commands::resize_dock,
             commands::dock_heartbeat,
             commands::set_dock_order,
+            commands::resize_topbar,
+            commands::focus_topbar,
+            commands::get_tray_items,
+            commands::refresh_tray,
+            commands::tray_click,
+            commands::open_system_notification_center,
+            commands::get_notifications,
+            commands::refresh_notifications,
+            commands::get_quick_state,
+            commands::set_volume,
+            commands::set_muted,
+            commands::set_brightness,
+            commands::set_wifi,
+            commands::set_bluetooth,
+            commands::set_dark_mode,
+            commands::set_power_mode,
+            commands::power_action,
         ])
         .setup(|app| {
             // 加载（或初始化）配置
@@ -82,6 +104,15 @@ pub fn run() {
             monitor::spawn(app.handle().clone());
             // 图标工作线程：隔离可能阻塞的 Shell COM 调用
             worker::spawn(app.handle().clone());
+            // 顶栏任务托盘镜像 / 通知中心工作线程
+            tray_mirror::spawn(app.handle().clone());
+            notifications::spawn(app.handle().clone());
+            if cfg.tray_icons {
+                tray_mirror::request_refresh(app.handle());
+            }
+            if cfg.notification_center {
+                notifications::request_refresh(app.handle());
+            }
 
             Ok(())
         })

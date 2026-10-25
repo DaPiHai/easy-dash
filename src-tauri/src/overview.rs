@@ -30,6 +30,8 @@ pub fn toggle(app: &AppHandle) {
 }
 
 pub fn show(app: &AppHandle) {
+    // 顶栏面板（通知中心/控制中心）先收起：概览打开时面板会浮在概览之上
+    let _ = app.emit_to("topbar", "close-panels", ());
     let state = app.state::<AppState>();
     let wins = winapi::enumerate::list_windows(std::process::id(), &state);
     // 概览截图缓存：最小化窗口 PrintWindow 通常取不到画面，

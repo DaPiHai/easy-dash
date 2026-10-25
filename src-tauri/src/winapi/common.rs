@@ -143,3 +143,58 @@ pub fn raise_topmost(hwnd: HWND) {
         );
     }
 }
+
+/// 为当前进程启用某个令牌特权（如 "SeShutdownPrivilege"）。成功返回 true。
+///
+/// 流程：打开当前进程令牌 → 查特权 LUID → AdjustTokenPrivileges 启用。
+/// 注意 AdjustTokenPrivileges 即使“部分成功”（ERROR_NOT_ALL_ASSIGNED）也返回成功，
+/// 因此最后必须再查一次 GetLastError。
+pub fn enable_privilege(name: &str) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::core::PCWSTR;
+
+    let wide_name = to_wide(name);
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+        .is_err()
+        {
+            return false;
+        }
+
+        let mut luid = windows::Win32::Foundation::LUID::default();
+        if LookupPrivilegeValueW(PCWSTR::null(), PCWSTR(wide_name.as_ptr()), &mut luid).is_err() {
+            let _ = CloseHandle(token);
+            return false;
+        }
+
+        let privileges = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let adjusted = AdjustTokenPrivileges(
+            token,
+            false,
+            Some(&privileges as *const TOKEN_PRIVILEGES),
+            0,
+            None,
+            None,
+        );
+        // 部分成功（ERROR_NOT_ALL_ASSIGNED）也会返回 Ok，需要再查 GetLastError
+        let error = GetLastError();
+        let _ = CloseHandle(token);
+        adjusted.is_ok() && error.0 == 0
+    }
+}

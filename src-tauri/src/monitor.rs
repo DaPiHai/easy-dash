@@ -84,10 +84,17 @@ pub fn spawn(app: AppHandle) {
             }
 
             // 周期性把顶栏/Dock 抢回 topmost 顶端（约 2 秒一次），
-            // 同时校正顶栏位置（任务栏被移动后自动避让）
+            // 同时校正顶栏位置（任务栏被移动后自动避让）。
+            // 顶栏面板展开时窗口是被有意拉高的，此时跳过几何校正，
+            // 否则 sync_topbar 会把窗口顶回 32px（面板被裁掉）。
             if tick % 5 == 0 {
-                if let Some(topbar) = app.get_webview_window("topbar") {
-                    winapi::appbar::sync_topbar(&topbar);
+                if !state
+                    .topbar_panel_open
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    if let Some(topbar) = app.get_webview_window("topbar") {
+                        winapi::appbar::sync_topbar(&topbar);
+                    }
                 }
                 for label in ["topbar", "dock"] {
                     if let Some(w) = app.get_webview_window(label) {

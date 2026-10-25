@@ -4,6 +4,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
 
 use crate::config::Config;
+use crate::types::{NotificationItem, TrayItem};
 
 /// 全局共享状态
 pub struct AppState {
@@ -47,11 +48,28 @@ pub struct AppState {
     /// Dock 页面心跳时间戳（毫秒）：页面每 3 秒上报一次；
     /// 超时说明页面 JS 死了或渲染进程崩溃，看门狗会 reload
     pub dock_hb_ms: AtomicU64,
+    /// 顶栏面板是否展开（展开时窗口被拉高，AppBar 周期校正必须让路，
+    /// 否则 2 秒后窗口会被 sync_topbar 顶回 32px）
+    pub topbar_panel_open: AtomicBool,
+    /// 系统托盘镜像条目缓存（含截图图标）
+    pub tray: Mutex<Vec<TrayItem>>,
+    /// 托盘刷新请求通道（前端/启动时投递，工作线程消费）
+    pub tray_tx: Sender<()>,
+    pub tray_rx: Mutex<Option<Receiver<()>>>,
+    /// 托盘镜像是否可用（非 Win11 XAML 任务栏 / 任务栏隐藏时为 false）
+    pub tray_available: AtomicBool,
+    /// 通知中心条目缓存
+    pub notifications: Mutex<Vec<NotificationItem>>,
+    /// 通知刷新请求通道
+    pub notif_tx: Sender<()>,
+    pub notif_rx: Mutex<Option<Receiver<()>>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel::<()>();
+        let (notif_tx, notif_rx) = std::sync::mpsc::channel::<()>();
         Self {
             icon_cache: Mutex::new(HashMap::new()),
             aumid_names: Mutex::new(HashMap::new()),
@@ -69,6 +87,14 @@ impl AppState {
             appbar_registered: AtomicBool::new(false),
             last_foreign_fg: AtomicIsize::new(0),
             dock_hb_ms: AtomicU64::new(now_ms()),
+            topbar_panel_open: AtomicBool::new(false),
+            tray: Mutex::new(Vec::new()),
+            tray_tx,
+            tray_rx: Mutex::new(Some(tray_rx)),
+            tray_available: AtomicBool::new(false),
+            notifications: Mutex::new(Vec::new()),
+            notif_tx,
+            notif_rx: Mutex::new(Some(notif_rx)),
         }
     }
 }
