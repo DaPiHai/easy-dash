@@ -1,0 +1,46 @@
+:root {
+  --panel-bg: rgba(24, 24, 26, 0.85);
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --text: #ffffff;
+  --text-dim: rgba(255, 255, 255, 0.75);
+  --accent: #3584e4;
+  --danger: #f66152;
+  --ok: #57e389;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+img {
+  -webkit-user-drag: none;
+}
+
+button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: default;
+}
+
+.hidden {
+  display: none !important;
+}

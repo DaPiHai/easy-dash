@@ -1,0 +1,16 @@
+{
+  "name": "easy-dash",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "类 GNOME 桌面美化工具：顶栏 + Dock + 活动概览",
+  "scripts": {
+    "tauri": "tauri",
+    "icon": "node scripts/gen-icon.js && tauri icon src-tauri/app-icon.png",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

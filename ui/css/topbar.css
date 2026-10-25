@@ -1,0 +1,102 @@
+.topbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 100vh;
+  padding: 0 10px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--panel-border);
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  z-index: 1;
+}
+
+body.hidden .topbar {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.activities {
+  padding: 4px 14px;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.activities:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+}
+
+.battery {
+  gap: 5px;
+}
+
+.bat-icon {
+  position: relative;
+  display: inline-block;
+  width: 20px;
+  height: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 3px;
+  opacity: 0.95;
+}
+
+.bat-icon::after {
+  content: "";
+  position: absolute;
+  right: -4px;
+  top: 1.5px;
+  width: 2px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 0 1px 1px 0;
+}
+
+.bat-fill {
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  bottom: 1px;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 1.5px;
+  transition: width 0.4s ease, background 0.3s ease;
+}
+
+.bat-fill.low {
+  background: var(--danger);
+}
+
+.bat-fill.charging {
+  background: var(--ok);
+}
+
+.bat-pct {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 26px;
+}

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="css/shared.css" />
+  <link rel="stylesheet" href="css/topbar.css" />
+</head>
+<body>
+  <div class="topbar" id="topbar">
+    <button id="activities" class="activities" title="打开活动概览">活动</button>
+    <div class="center">
+      <span id="date"></span>
+      <span id="clock"></span>
+    </div>
+    <div class="right">
+      <span id="net" class="stat" title="网络"></span>
+      <span id="volume" class="stat" title="音量">
+        <svg width="16" height="16" viewBox="0 0 16 16">
+          <path d="M2.5 6h2.4L8.6 3v10L4.9 10H2.5z" fill="#fff"/>
+          <path d="M10.8 5.6a3.4 3.4 0 0 1 0 4.8" stroke="#fff" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span id="battery" class="stat battery" title="电池">
+        <span class="bat-icon"><span class="bat-fill" id="bat-fill"></span></span>
+        <span class="bat-pct" id="bat-pct"></span>
+      </span>
+    </div>
+  </div>
+  <script type="module" src="js/topbar.js"></script>
+</body>
+</html>

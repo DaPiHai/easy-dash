@@ -1,0 +1,157 @@
+body {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  height: 100vh;
+  padding: 14px 8px 8px;
+}
+
+.dock {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+body.hidden .dock {
+  transform: translateY(140%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.items {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding-bottom: 6px; /* 给指示点留空间 */
+}
+
+.dock-item,
+.dock-btn {
+  position: relative;
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 50% 100%;
+  transition: transform 0.09s linear, background 0.15s ease;
+}
+
+.dock-item:hover,
+.dock-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.dock-item img,
+.dock-btn svg {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* 图标提取失败时的字母占位 */
+.dock-item .letter {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  pointer-events: none;
+}
+
+/* 拖拽排序 */
+.drag-src {
+  opacity: 0.3;
+}
+
+.drag-ghost {
+  opacity: 0.95;
+  transform: scale(1.08);
+  transform-origin: 50% 100%;
+  border-radius: 12px;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
+}
+
+/* 运行指示点（GNOME 风格） */
+.dock-item::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 5px;
+  height: 5px;
+  border-radius: 3px;
+  background: transparent;
+  transition: width 0.15s ease, background 0.15s ease;
+}
+
+.dock-item.running::after {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.dock-item.focused::after {
+  width: 16px;
+  background: #fff;
+}
+
+.divider {
+  width: 1px;
+  height: 34px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.tooltip {
+  position: fixed;
+  transform: translateX(-50%);
+  max-width: 320px;
+  padding: 5px 10px;
+  background: rgba(36, 36, 38, 0.96);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  z-index: 30;
+}
+
+.ctx-menu {
+  position: fixed;
+  min-width: 150px;
+  padding: 5px;
+  background: rgba(36, 36, 38, 0.97);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+
+.ctx-menu .mi {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.ctx-menu .mi:hover {
+  background: rgba(255, 255, 255, 0.12);
+}

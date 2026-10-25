@@ -1,0 +1,17 @@
+# ── 依赖 ──
+node_modules/
+
+# ── 构建产物 ──
+src-tauri/target/
+dist/
+*.log
+
+# ── 生成资源（由 npm run icon / cargo build 自动生成，勿手改） ──
+src-tauri/icons/
+src-tauri/app-icon.png
+src-tauri/gen/schemas/
+
+# ── 工具/编辑器状态 ──
+.zcode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,10 @@
+# 仓库内统一使用 LF，避免 Windows 换行符噪音
+* text=auto eol=lf
+
+# 二进制资源（不做换行/文本差异处理）
+*.png binary
+*.ico binary
+*.icns binary
+*.jpg binary
+*.jpeg binary
+*.gif binary

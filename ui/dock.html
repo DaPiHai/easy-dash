@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="css/shared.css" />
+  <link rel="stylesheet" href="css/dock.css" />
+</head>
+<body>
+  <div id="dock" class="dock">
+    <div id="items" class="items"></div>
+    <div id="divider" class="divider hidden"></div>
+    <button id="grid" class="dock-btn" title="活动概览">
+      <svg width="18" height="18" viewBox="0 0 18 18">
+        <circle cx="4" cy="4" r="1.7" fill="#fff"/><circle cx="9" cy="4" r="1.7" fill="#fff"/><circle cx="14" cy="4" r="1.7" fill="#fff"/>
+        <circle cx="4" cy="9" r="1.7" fill="#fff"/><circle cx="9" cy="9" r="1.7" fill="#fff"/><circle cx="14" cy="9" r="1.7" fill="#fff"/>
+        <circle cx="4" cy="14" r="1.7" fill="#fff"/><circle cx="9" cy="14" r="1.7" fill="#fff"/><circle cx="14" cy="14" r="1.7" fill="#fff"/>
+      </svg>
+    </button>
+  </div>
+  <div id="tooltip" class="tooltip hidden"></div>
+  <div id="menu" class="ctx-menu hidden"></div>
+  <script>
+    // 独立于模块的错误捕获：模块脚本语法/加载失败也能显示原因
+    (function () {
+      function show(msg) {
+        try {
+          var b = document.getElementById("boot-err") || document.createElement("div");
+          b.id = "boot-err";
+          b.style.cssText =
+            "position:fixed;bottom:4px;left:50%;transform:translateX(-50%);" +
+            "background:rgba(192,28,40,.92);color:#fff;font-size:11px;padding:3px 10px;" +
+            "border-radius:8px;max-width:90vw;overflow:hidden;white-space:nowrap;z-index:99";
+          b.textContent = "Dock 启动失败: " + msg;
+          document.body.appendChild(b);
+        } catch (e) {}
+      }
+      window.addEventListener("error", function (e) {
+        show((e.message || "脚本错误") + (e.filename ? " @ " + e.filename.split("/").pop() + ":" + e.lineno : ""));
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        show("Promise: " + ((e.reason && (e.reason.message || e.reason)) || "unknown"));
+      });
+    })();
+  </script>
+  <script type="module" src="js/dock.js"></script>
+</body>
+</html>

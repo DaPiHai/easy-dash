@@ -1,0 +1,111 @@
+body {
+  height: 100vh;
+}
+
+#backdrop {
+  height: 100vh;
+  background: rgba(12, 12, 14, 0.72);
+  padding: 60px 64px 40px;
+  overflow: auto;
+}
+
+#grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 28px;
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+.card {
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(40, 40, 44, 0.92);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.92);
+  animation: card-in 0.28s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+  transition: outline 0.12s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  outline: 2px solid transparent;
+}
+
+.card:hover {
+  outline-color: rgba(255, 255, 255, 0.55);
+  transform: scale(1.02);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+}
+
+@keyframes card-in {
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: top;
+  background: #101014;
+}
+
+.thumb.fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.thumb.fallback img {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.5));
+}
+
+.info {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+}
+
+.info .icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  flex: none;
+}
+
+.info .title {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 15px;
+}
+
+.hint {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 12px;
+  pointer-events: none;
+}

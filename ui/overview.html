@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="css/shared.css" />
+  <link rel="stylesheet" href="css/overview.css" />
+</head>
+<body>
+  <div id="backdrop">
+    <div id="grid"></div>
+    <div id="empty" class="empty hidden">
+      <svg width="48" height="48" viewBox="0 0 48 48">
+        <rect x="6" y="10" width="36" height="26" rx="3" stroke="rgba(255,255,255,.35)" stroke-width="2.5" fill="none"/>
+        <path d="M18 42h12" stroke="rgba(255,255,255,.35)" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <p>没有打开的窗口</p>
+    </div>
+    <div id="hint" class="hint">Esc 关闭 · 点击窗口卡片切换</div>
+  </div>
+  <script type="module" src="js/overview.js"></script>
+</body>
+</html>

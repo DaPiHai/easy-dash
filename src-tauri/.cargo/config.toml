@@ -1,0 +1,9 @@
+# 本项目使用 rsproxy 国内镜像加速 crates 下载（不影响全局配置）
+[source.crates-io]
+replace-with = 'rsproxy-sparse'
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true
