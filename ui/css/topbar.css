@@ -129,6 +129,8 @@ body.panel-open .topbar {
   display: flex;
   align-items: center;
   gap: 2px;
+  /* 拖拽排序用 pointer 事件，禁掉触摸手势/原生拖拽干扰 */
+  touch-action: none;
 }
 
 .tray-item {
@@ -182,6 +184,29 @@ body.panel-open .topbar {
   line-height: 1;
   opacity: 0.85;
   pointer-events: none;
+}
+
+/* ---- 托盘拖拽排序（pointer 事件，窗口只有 32px 高） ---- */
+
+.tray-item[data-kind="icon"] {
+  cursor: grab;
+}
+
+.tray-item.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.tray-item.drop-target {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* 拖拽期间：手型光标 + 禁止选中文字/图标 */
+body.tray-dragging,
+body.tray-dragging * {
+  cursor: grabbing !important;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* ==================== 控制中心入口（聚合图标） ==================== */

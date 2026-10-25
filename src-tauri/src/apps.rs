@@ -58,11 +58,33 @@ fn refresh_once(app: &AppHandle) {
     app.state::<AppState>()
         .apps_refreshing
         .store(true, Ordering::Relaxed);
+
+    let cfg = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+
     let classic = winapi::start_apps::enumerate();
     let packaged = winapi::packaged_apps::enumerate();
+    // 应用中心手动导入的应用：与 Start Menu / 打包应用一起参与去重与排序
+    let imported: Vec<AppEntry> = cfg
+        .imported_apps
+        .iter()
+        .filter_map(|item| match winapi::imports::make_entry(&item.path, &item.name, &item.args) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                eprintln!("[apps] 跳过无效导入应用（{}）：{e}", item.path);
+                None
+            }
+        })
+        .collect();
+    let classic: Vec<AppEntry> = classic.into_iter().chain(imported).collect();
+
     let mut apps = merge_apps(classic, packaged);
     normalize_uwp_icons(&mut apps);
-    sort_apps(&mut apps);
+    apply_app_order(&mut apps, &cfg.app_order);
 
     let count = apps.len();
     {
@@ -76,6 +98,71 @@ fn refresh_once(app: &AppHandle) {
         "[apps] 应用列表已刷新：{count} 个（{} ms）",
         started.elapsed().as_millis()
     );
+    let _ = app.emit("apps-changed", ());
+}
+
+/// 按配置里的自定义顺序重排（app_order 中出现的按首次出现位置；
+/// 未出现的按本地化名称排序追加在后）。纯函数，便于单测。
+pub fn apply_app_order(apps: &mut [AppEntry], order: &[String]) {
+    let mut rank: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, id) in order.iter().enumerate() {
+        let id = id.trim();
+        if !id.is_empty() {
+            rank.entry(id).or_insert(i);
+        }
+    }
+    apps.sort_by(|a, b| match (rank.get(a.id.as_str()), rank.get(b.id.as_str())) {
+        (Some(ra), Some(rb)) => ra.cmp(rb),
+        (Some(_), None) => CmpOrdering::Less,
+        (None, Some(_)) => CmpOrdering::Greater,
+        (None, None) => compare_names(&a.name, &b.name),
+    });
+}
+
+/// 按当前配置的自定义顺序重排缓存并通知前端（用于 set_app_order，不重新枚举）。
+pub fn reapply_order(app: &AppHandle) {
+    let cfg = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    {
+        let st = app.state::<AppState>();
+        let mut apps = st.apps.lock().unwrap_or_else(|e| e.into_inner());
+        apply_app_order(&mut apps, &cfg.app_order);
+    }
+    let _ = app.emit("apps-changed", ());
+}
+
+/// 把新导入的应用插入缓存（已存在则替换同名 id），按配置顺序重排并通知前端。
+pub fn cache_upsert(app: &AppHandle, entry: AppEntry) {
+    let cfg = app
+        .state::<AppState>()
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    {
+        let st = app.state::<AppState>();
+        let mut apps = st.apps.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pos) = apps.iter().position(|a| a.id == entry.id) {
+            apps[pos] = entry;
+        } else {
+            apps.push(entry);
+        }
+        apply_app_order(&mut apps, &cfg.app_order);
+    }
+    let _ = app.emit("apps-changed", ());
+}
+
+/// 从缓存移除某个应用（移除导入应用时使用）并通知前端。
+pub fn cache_remove(app: &AppHandle, id: &str) {
+    {
+        let st = app.state::<AppState>();
+        let mut apps = st.apps.lock().unwrap_or_else(|e| e.into_inner());
+        apps.retain(|a| a.id != id);
+    }
     let _ = app.emit("apps-changed", ());
 }
 
@@ -112,11 +199,6 @@ fn normalize_uwp_icons(apps: &mut [AppEntry]) {
             }
         }
     }
-}
-
-/// 按显示名做本地化排序（中文按 Windows 排序规则；CompareStringEx 失败回退小写比较）。
-fn sort_apps(apps: &mut [AppEntry]) {
-    apps.sort_by(|a, b| compare_names(&a.name, &b.name));
 }
 
 pub fn compare_names(a: &str, b: &str) -> CmpOrdering {
@@ -161,6 +243,7 @@ mod tests {
             name: name.into(),
             icon: None,
             launch: launch.into(),
+            args: String::new(),
             kind: "classic".into(),
         }
     }
@@ -198,5 +281,22 @@ mod tests {
         assert_eq!(compare_names("abc", "abc"), CmpOrdering::Equal);
         assert_eq!(compare_names("Alpha", "Beta"), CmpOrdering::Less);
         assert_eq!(compare_names("Beta", "Alpha"), CmpOrdering::Greater);
+    }
+
+    #[test]
+    fn apply_app_order_puts_ranked_first_and_appends_unknowns() {
+        let mut apps = vec![
+            app("a", "Alpha", "a.exe"),
+            app("b", "Beta", "b.exe"),
+            app("c", "Gamma", "c.exe"),
+        ];
+        apply_app_order(&mut apps, &["c".into(), "a".into()]);
+        let ids: Vec<&str> = apps.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "a", "b"]);
+
+        // 空 order 时按名称排序
+        let mut apps = vec![app("b", "Beta", "b.exe"), app("a", "Alpha", "a.exe")];
+        apply_app_order(&mut apps, &[]);
+        assert_eq!(apps[0].id, "a");
     }
 }

@@ -1,9 +1,17 @@
-// 顶栏任务托盘镜像：渲染系统托盘图标、hover 提示、左/右键转发到真实托盘。
+// 顶栏任务托盘镜像：渲染系统托盘图标、hover 提示、左/右键转发到真实托盘，
+// 以及图标拖拽排序（pointer 事件；顶栏窗口只有 32px 高，HTML5 DnD 体验很差）。
 // 数据来自 get_tray_items()；后端刷新完成后会发 tray-changed（payload 为数组）。
 import { invoke, invokeRetry, listen, escapeHtml } from "./api.js";
 
 /** 托盘刷新间隔（毫秒） */
 const REFRESH_MS = 10000;
+/** 拖拽判定阈值（像素） */
+const DRAG_THRESHOLD = 5;
+/** 拖拽结束后抑制 click 的时长（毫秒），避免松手被当成一次托盘点击 */
+const CLICK_SUPPRESS_MS = 300;
+/** 本地顺序锁定时长：刚提交 set_tray_order 后，避免旧顺序的快照立刻把界面顶回去
+ *  （后端要保存配置 + 重新枚举托盘，留足 3s 更稳） */
+const ORDER_LOCK_MS = 3000;
 
 const LETTER_COLORS = ["#3584e4", "#e66100", "#2ec27e", "#9141ac", "#e01b24", "#1c71d8", "#8f4e2b"];
 
@@ -15,6 +23,19 @@ let timer = null;
 let domBound = false;
 let listenBound = false;
 let fetchSeq = 0;
+
+// ---------- 拖拽状态 ----------
+let dragState = null; // { key, el, startX, startY, moved, targetEl }
+let pendingItems = null; // 拖拽期间到达的最新列表（拖拽结束后再应用）
+let orderLock = null; // { keys: string[], until: number }
+let suppressClickUntil = 0;
+
+/** 稳定排序 key：优先用后端 orderKey，旧数据回退 name/index */
+function keyOf(item, index) {
+  const it = item || {};
+  if (it.orderKey) return String(it.orderKey);
+  return String(it.name || "item") + "#" + index;
+}
 
 /** 启动托盘镜像（幂等）：首刷 + 每 10s 刷新 */
 export function startTray() {
@@ -45,6 +66,9 @@ export function stopTray() {
     clearInterval(timer);
     timer = null;
   }
+  resetDrag();
+  pendingItems = null;
+  orderLock = null;
   items = [];
   fetchSeq++;
   hideTooltip();
@@ -69,9 +93,51 @@ async function load(first) {
 
 function applyItems(list) {
   const next = Array.isArray(list) ? list : [];
-  if (sameItems(next, items)) return; // 内容没变就不重绘，避免 hover 闪烁
-  items = next;
+  // 拖拽期间不重绘：只记住最新列表，松手后统一应用，避免 10s 轮询把拖拽中的 DOM 换掉
+  if (dragState) {
+    pendingItems = next;
+    return;
+  }
+  const ordered = applyOrderLock(next);
+  if (sameItems(ordered, items)) return; // 内容没变就不重绘，避免 hover 闪烁
+  items = ordered;
   render();
+}
+
+/** 刚提交排序后的一小段时间内，用本地顺序重排后端快照，避免视觉回跳 */
+function applyOrderLock(list) {
+  if (!orderLock) return list;
+  if (Date.now() > orderLock.until) {
+    orderLock = null;
+    return list;
+  }
+  const arr = list.slice();
+  const iconSlots = [];
+  const icons = [];
+  arr.forEach((it, i) => {
+    if (it && it.kind === "icon") {
+      iconSlots.push(i);
+      icons.push(it);
+    }
+  });
+  if (!icons.length) return arr;
+
+  const byKey = new Map();
+  icons.forEach((it, i) => byKey.set(keyOf(it, i), it));
+  const ordered = [];
+  for (const k of orderLock.keys) {
+    const it = byKey.get(k);
+    if (it) {
+      ordered.push(it);
+      byKey.delete(k);
+    }
+  }
+  for (const it of byKey.values()) ordered.push(it);
+  if (ordered.length !== icons.length) return arr; // 数据不一致，放弃锁定
+
+  let k = 0;
+  for (const slot of iconSlots) arr[slot] = ordered[k++];
+  return arr;
 }
 
 function sameItems(a, b) {
@@ -80,6 +146,7 @@ function sameItems(a, b) {
     const x = a[i] || {};
     const y = b[i] || {};
     if (x.name !== y.name || x.kind !== y.kind || x.icon !== y.icon) return false;
+    if (x.orderKey !== undefined && y.orderKey !== undefined && x.orderKey !== y.orderKey) return false;
   }
   return true;
 }
@@ -135,8 +202,9 @@ function markDarkIcons() {
 function itemHtml(item, index) {
   const it = item || {};
   const name = String(it.name || "托盘项");
+  const kind = it.kind === "overflow" ? "overflow" : "icon";
   let inner;
-  if (it.kind === "overflow") {
+  if (kind === "overflow") {
     // 「显示隐藏的图标」按钮
     inner = '<span class="tray-overflow">»</span>';
   } else if (it.icon) {
@@ -155,6 +223,10 @@ function itemHtml(item, index) {
   return (
     '<button class="tray-item" type="button" data-index="' +
     index +
+    '" data-kind="' +
+    kind +
+    '" data-key="' +
+    escapeHtml(keyOf(it, index)) +
     '" title="' +
     escapeHtml(name) +
     '" aria-label="' +
@@ -180,6 +252,17 @@ function bindDomOnce() {
   domBound = true;
 
   trayEl.addEventListener("click", (e) => {
+    // 刚拖拽过：松手产生的 click 不能当成托盘点击（只抑制一次）
+    if (suppressClickUntil) {
+      const now = Date.now();
+      if (now < suppressClickUntil) {
+        suppressClickUntil = 0;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      suppressClickUntil = 0;
+    }
     const el = e.target.closest ? e.target.closest(".tray-item") : null;
     if (!el) return;
     clickTray(el, "left");
@@ -197,6 +280,13 @@ function bindDomOnce() {
     if (el) showTooltip(el);
   });
   trayEl.addEventListener("mouseleave", hideTooltip);
+
+  // ---- 拖拽排序（pointer 事件；只对 kind=icon 生效） ----
+  trayEl.addEventListener("pointerdown", onPointerDown);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerCancel);
+  window.addEventListener("blur", onPointerCancel);
 }
 
 function bindListenOnce() {
@@ -233,10 +323,189 @@ function clickTray(el, button) {
   }
 }
 
+// ---------- 拖拽排序 ----------
+
+function onPointerDown(e) {
+  if (e.button !== 0) return; // 只处理左键；右键留给 contextmenu
+  const el = e.target.closest ? e.target.closest(".tray-item") : null;
+  if (!el) return;
+  if (el.dataset.kind !== "icon") return; // overflow 固定不拖
+  const key = el.dataset.key || "";
+  if (!key) return;
+
+  dragState = {
+    key,
+    el,
+    pointerId: e.pointerId,
+    startX: e.clientX,
+    startY: e.clientY,
+    moved: false,
+    targetEl: null,
+  };
+  // 捕获指针：拖出元素/窗口边缘也能继续收到 move/up
+  try {
+    if (el.setPointerCapture) el.setPointerCapture(e.pointerId);
+  } catch (err) {
+    /* 忽略 */
+  }
+}
+
+function onPointerMove(e) {
+  const d = dragState;
+  if (!d) return;
+  if (!d.moved) {
+    if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
+    d.moved = true;
+    d.el.classList.add("dragging");
+    document.body.classList.add("tray-dragging");
+    hideTooltip();
+  }
+  updateDropTarget(e.clientX, e.clientY);
+}
+
+function updateDropTarget(x, y) {
+  const d = dragState;
+  if (!d || !d.moved) return;
+  const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
+  const el = hit && hit.closest ? hit.closest(".tray-item") : null;
+  const valid = el && el !== d.el && el.dataset.kind === "icon" ? el : null;
+  if (d.targetEl === valid) return;
+  if (d.targetEl) d.targetEl.classList.remove("drop-target");
+  d.targetEl = valid;
+  if (valid) valid.classList.add("drop-target");
+}
+
+function onPointerUp(e) {
+  const d = dragState;
+  if (!d) return;
+
+  if (!d.moved) {
+    // 只是点击，没有拖动：清理状态，什么都不做（click 会正常转发）
+    resetDrag();
+    applyPending(); // 期间积攒的列表照常应用
+    return;
+  }
+
+  const targetEl = d.targetEl;
+  const sourceKey = d.key;
+  const targetKey = targetEl ? targetEl.dataset.key || "" : "";
+  let after = false;
+  if (targetEl) {
+    try {
+      const r = targetEl.getBoundingClientRect();
+      after = e.clientX >= r.left + r.width / 2;
+    } catch (err) {
+      after = false;
+    }
+  }
+
+  resetDrag();
+
+  // 只要真的拖动过（无论有没有落在目标上），松手产生的 click 都要抑制一次，
+  // 否则拖到空白处松手会把托盘项当成被点击（弹出菜单/激活窗口）。
+  suppressClickUntil = Date.now() + CLICK_SUPPRESS_MS;
+
+  if (!targetKey) {
+    // 松手在空白处：不算排序
+    applyPending();
+    return;
+  }
+
+  const changed = reorderIcons(sourceKey, targetKey, after);
+  if (changed) {
+    render();
+    commitOrder();
+  }
+  applyPending();
+}
+
+function onPointerCancel() {
+  if (!dragState) return;
+  resetDrag();
+  applyPending();
+}
+
+/** 清理拖拽的视觉/状态（不提交顺序） */
+function resetDrag() {
+  const d = dragState;
+  dragState = null;
+  if (d) {
+    if (d.targetEl) d.targetEl.classList.remove("drop-target");
+    if (d.el) {
+      d.el.classList.remove("dragging");
+      try {
+        if (d.el.releasePointerCapture && d.pointerId !== undefined) {
+          d.el.releasePointerCapture(d.pointerId);
+        }
+      } catch (err) {
+        /* 指针已释放时忽略 */
+      }
+    }
+  }
+  document.body.classList.remove("tray-dragging");
+}
+
+/** 拖拽期间积攒的最新列表，拖拽结束后应用 */
+function applyPending() {
+  if (!pendingItems) return;
+  const next = pendingItems;
+  pendingItems = null;
+  applyItems(next);
+}
+
+/**
+ * 把 sourceKey 的图标移动到 targetKey 前/后（仅 icon 之间）。
+ * overflow 项保持它原来的“槽位”，不参与排序。
+ */
+function reorderIcons(sourceKey, targetKey, after) {
+  if (!sourceKey || !targetKey || sourceKey === targetKey) return false;
+
+  const iconSlots = [];
+  const icons = [];
+  items.forEach((it, i) => {
+    if (it && it.kind === "icon") {
+      iconSlots.push(i);
+      icons.push({ item: it, key: keyOf(it, i) });
+    }
+  });
+
+  const from = icons.findIndex((x) => x.key === sourceKey);
+  const to = icons.findIndex((x) => x.key === targetKey);
+  if (from < 0 || to < 0) return false;
+
+  let insertAt = to + (after ? 1 : 0);
+  if (from < insertAt) insertAt -= 1;
+  if (insertAt === from) return false;
+
+  const moved = icons.splice(from, 1)[0];
+  icons.splice(insertAt, 0, moved);
+
+  const next = items.slice();
+  let k = 0;
+  for (const slot of iconSlots) next[slot] = icons[k++].item;
+  items = next;
+  return true;
+}
+
+/** 把当前 icon 顺序提交给后端，并短暂锁定本地顺序 */
+function commitOrder() {
+  const order = [];
+  items.forEach((it, i) => {
+    if (it && it.kind === "icon") order.push(keyOf(it, i));
+  });
+  orderLock = { keys: order, until: Date.now() + ORDER_LOCK_MS };
+  try {
+    invoke("set_tray_order", { order }).catch(() => {});
+  } catch (e) {
+    /* Tauri 尚未注入时忽略 */
+  }
+}
+
 // ---------- hover 提示（复用 dock 的 tooltip 样式） ----------
 
 function showTooltip(el) {
   if (!tooltipEl) return;
+  if (dragState && dragState.moved) return; // 拖拽中不弹提示
   // 顶栏窗口常态只有 32px 高，自绘提示会被窗口裁掉；此时依赖 title 的原生提示
   if (window.innerHeight < 80) {
     hideTooltip();

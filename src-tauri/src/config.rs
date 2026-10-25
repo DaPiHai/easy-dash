@@ -11,6 +11,18 @@ pub struct PinnedApp {
     pub args: String,
 }
 
+/// 应用中心里用户手动导入的应用（不写入 Windows 开始菜单）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedApp {
+    /// 显示名；空则按文件版本信息/主名推导
+    #[serde(default)]
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub args: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
@@ -28,6 +40,12 @@ pub struct Config {
     pub control_center: bool,
     /// 应用中心全局热键（默认 Alt+Space）
     pub app_center_hotkey: String,
+    /// 顶栏托盘图标自定义顺序（TrayItem.orderKey 列表；不在列表中的追加在后）
+    pub tray_order: Vec<String>,
+    /// 应用中心自定义顺序（AppEntry.id 列表；不在列表中的按名称排序追加）
+    pub app_order: Vec<String>,
+    /// 应用中心手动导入的应用
+    pub imported_apps: Vec<ImportedApp>,
 }
 
 fn default_true() -> bool {
@@ -67,6 +85,9 @@ impl Default for Config {
             notification_center: default_true(),
             control_center: default_true(),
             app_center_hotkey: "alt+space".into(),
+            tray_order: Vec::new(),
+            app_order: Vec::new(),
+            imported_apps: Vec::new(),
         }
     }
 }

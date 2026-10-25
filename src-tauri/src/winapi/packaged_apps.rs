@@ -184,6 +184,8 @@ fn entry_to_app(entry: &AppListEntry, seen: &mut HashSet<String>) -> Option<AppE
         name,
         icon,
         launch: format!("{APPS_FOLDER}{aumid}"),
+        // 打包应用没有额外启动参数
+        args: String::new(),
         kind: String::from("uwp"),
     })
 }

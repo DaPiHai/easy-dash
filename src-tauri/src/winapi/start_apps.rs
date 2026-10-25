@@ -130,6 +130,8 @@ fn entries_from_candidates(candidates: Vec<(usize, PathBuf)>) -> Vec<AppEntry> {
             name,
             icon: None,
             launch,
+            // 内置 Start Menu 快捷方式没有额外启动参数
+            args: String::new(),
             kind: "classic".to_string(),
         });
     }

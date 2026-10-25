@@ -450,17 +450,40 @@ pub fn snapshot_windows() -> Vec<isize> {
     out
 }
 
+/// 判断一个窗口是否应在弹窗迁移时被忽略。
+///
+/// - 无主窗口（pid == 0）→ 忽略；
+/// - 本进程窗口：只有 topbar/dock/overview/launcher（`own_hwnds`）忽略，
+///   其它本进程新出现的窗口（Tauri 托盘右键菜单就是本进程的 `#32768`）
+///   作为正常菜单候选参与迁移；
+/// - 其它进程窗口 → 不忽略。
+fn is_excluded_own_window(pid: u32, own_pid: u32, hwnd: isize, own_hwnds: &[isize]) -> bool {
+    if pid == 0 {
+        return true;
+    }
+    if pid != own_pid {
+        return false;
+    }
+    own_hwnds.contains(&hwnd)
+}
+
 /// 弹窗候选判定与打分：返回 (优先级, 距托盘点击点的距离²)。
-/// 优先级：#32768 经典菜单(2) > Chrome_WidgetWin_1 应用浮层(1) > 其它浮窗(0)。
-fn popup_score(hwnd: HWND, own_pid: u32, tray_point: (i32, i32)) -> Option<(i32, i64)> {
+/// 优先级：#32768 经典菜单(3) > Chrome_WidgetWin_1 应用浮层(2) > 其它浮窗(1/0)。
+fn popup_score(
+    hwnd: HWND,
+    own_pid: u32,
+    tray_point: (i32, i32),
+    own_hwnds: &[isize],
+) -> Option<(i32, i64)> {
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() {
             return None;
         }
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == 0 || pid == own_pid {
-            return None; // 自己的窗口 / 无主窗口都不迁移
+        // 本进程的托盘菜单要参与迁移，只有自己的四个窗口排除
+        if is_excluded_own_window(pid, own_pid, hwnd.0 as isize, own_hwnds) {
+            return None;
         }
         let class = super::common::class_name(hwnd);
         if class.is_empty()
@@ -527,9 +550,16 @@ fn popup_score(hwnd: HWND, own_pid: u32, tray_point: (i32, i32)) -> Option<(i32,
 }
 
 /// 把点击后新出现/由隐转显的弹窗移动到顶栏图标下方。
-/// `before` 为点击前快照；`anchor_x` 为顶栏图标中心 x；`tray_point` 为原生托盘点击点。
+/// `before` 为点击前快照；`anchor_x` 为顶栏图标中心 x；`tray_point` 为原生托盘点击点；
+/// `own_hwnds` 为本应用自己的窗口（topbar/dock/overview/launcher），
+/// 只有它们会被排除，本进程其它窗口（Tauri 托盘菜单）照常参与迁移。
 /// 返回被移动的窗口句柄；没有可迁移弹窗时返回 None。
-pub fn relocate_popup(before: &[isize], anchor_x: i32, tray_point: (i32, i32)) -> Option<isize> {
+pub fn relocate_popup(
+    before: &[isize],
+    anchor_x: i32,
+    tray_point: (i32, i32),
+    own_hwnds: &[isize],
+) -> Option<isize> {
     let own_pid = unsafe { GetCurrentProcessId() };
 
     // 弹窗不一定是点击后立刻出现（QQ 的应用浮层要几百毫秒），
@@ -544,7 +574,7 @@ pub fn relocate_popup(before: &[isize], anchor_x: i32, tray_point: (i32, i32)) -
                 continue; // 点击前就存在（含"一直可见"）
             }
             let hwnd = HWND(h as *mut _);
-            let Some((prio, dist)) = popup_score(hwnd, own_pid, tray_point) else {
+            let Some((prio, dist)) = popup_score(hwnd, own_pid, tray_point, own_hwnds) else {
                 continue;
             };
             let better = match best {
@@ -646,5 +676,37 @@ fn dpi_scale(hwnd: HWND) -> f32 {
         1.0
     } else {
         dpi as f32 / 96.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_excluded_own_window;
+
+    const OWN_PID: u32 = 4242;
+    /// 模拟 AppState.own_hwnds：topbar / dock
+    const OWN_HWNDS: [isize; 2] = [1001, 1002];
+
+    #[test]
+    fn foreign_process_windows_are_not_excluded() {
+        assert!(!is_excluded_own_window(9999, OWN_PID, 500, &OWN_HWNDS));
+    }
+
+    #[test]
+    fn window_without_owner_pid_is_excluded() {
+        assert!(is_excluded_own_window(0, OWN_PID, 500, &OWN_HWNDS));
+    }
+
+    #[test]
+    fn own_app_windows_are_excluded() {
+        assert!(is_excluded_own_window(OWN_PID, OWN_PID, 1001, &OWN_HWNDS));
+        assert!(is_excluded_own_window(OWN_PID, OWN_PID, 1002, &OWN_HWNDS));
+    }
+
+    #[test]
+    fn own_tray_menu_window_is_not_excluded() {
+        // 本进程的 #32768 托盘菜单不在 own_hwnds 里 → 必须参与迁移
+        assert!(!is_excluded_own_window(OWN_PID, OWN_PID, 2001, &OWN_HWNDS));
+        assert!(!is_excluded_own_window(OWN_PID, OWN_PID, 2001, &[]));
     }
 }

@@ -17,7 +17,7 @@
 #![allow(dead_code)]
 #![allow(non_upper_case_globals)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -147,6 +147,80 @@ pub fn resolve_tray_items(items: &mut [TrayItem]) {
             item.name = name;
             item.icon = icon;
         }
+    }
+
+    // 名称/图标都补齐后，再计算跨刷新稳定的排序 key（拖拽排序按它持久化）
+    assign_order_keys(items);
+}
+
+// ==================== 托盘排序 key（拖拽排序后端） ====================
+
+/// 给所有条目填 `order_key`（跨刷新稳定，前端拖拽排序按它持久化到 config）。
+///
+/// 规则：
+/// - `overflow` → 固定 `"overflow"`；
+/// - 名字能匹配到注册表条目 → 用条目的 exe 主名（如 `"qq"`/`"weixin"`），
+///   这样 tooltip 里的账号/状态文本变化不会导致排序 key 漂移；
+/// - 未命中或无 stem → `normalize(name)`；
+/// - 都为空 → `"tray"`；
+/// - 同一 base 的多个实例（本机两个 QQ 账号共用同一注册表条目）按当前
+///   items 顺序追加 `#0`/`#1`；overflow 不加序号。
+fn assign_order_keys(items: &mut [TrayItem]) {
+    assign_order_keys_with(items, entries());
+}
+
+/// `assign_order_keys` 的可注入条目版本（单测用，避免依赖本机注册表）
+fn assign_order_keys_with(items: &mut [TrayItem], entries: &[NotifyEntry]) {
+    let bases: Vec<Option<String>> = items
+        .iter()
+        .map(|item| {
+            if item.kind == "overflow" {
+                None
+            } else {
+                Some(order_base(&item.name, entries))
+            }
+        })
+        .collect();
+    apply_order_keys(items, bases);
+}
+
+/// 单个条目的排序 base：注册表 exe 主名优先，否则归一化显示名，仍空则 "tray"
+fn order_base(name: &str, entries: &[NotifyEntry]) -> String {
+    if let Some(entry) = best_match(name, entries) {
+        if !entry.exe_stem.is_empty() {
+            return entry.exe_stem.clone();
+        }
+    }
+    let normalized = normalize(name);
+    if normalized.is_empty() {
+        "tray".to_string()
+    } else {
+        normalized
+    }
+}
+
+/// 按 base 填 order_key（纯函数，便于单测）：
+/// 同一 base 出现多次时按当前顺序追加 `#0`/`#1`；`None` 表示 overflow。
+fn apply_order_keys(items: &mut [TrayItem], bases: Vec<Option<String>>) {
+    let mut totals: HashMap<String, usize> = HashMap::new();
+    for base in bases.iter().flatten() {
+        *totals.entry(base.clone()).or_insert(0) += 1;
+    }
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for (item, base) in items.iter_mut().zip(bases.into_iter()) {
+        item.order_key = match base {
+            None => "overflow".to_string(),
+            Some(base) => {
+                if totals.get(&base).copied().unwrap_or(1) <= 1 {
+                    base
+                } else {
+                    let index = seen.entry(base.clone()).or_insert(0);
+                    let key = format!("{base}#{index}");
+                    *index += 1;
+                    key
+                }
+            }
+        };
     }
 }
 
@@ -1043,6 +1117,80 @@ mod tests {
         assert!(is_status_dynamic(&entry("", "QQ", "QQ")));
         assert!(!is_status_dynamic(&entry("", "weixin", "Weixin")));
         assert!(!is_status_dynamic(&entry("", "douyintray", "douyin_tray")));
+    }
+
+    // ---------- 托盘排序 key ----------
+
+    fn tray_item(kind: &str, name: &str) -> TrayItem {
+        TrayItem {
+            name: name.into(),
+            kind: kind.into(),
+            icon: None,
+            order_key: String::new(),
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        }
+    }
+
+    #[test]
+    fn order_keys_overflow_unnamed_and_fallback() {
+        let entries: Vec<NotifyEntry> = Vec::new();
+        let mut items = vec![
+            tray_item("overflow", "显示隐藏的图标"),
+            // 无名项 tray.rs 会填占位名 → 用归一化占位名做 base
+            tray_item("icon", "托盘图标"),
+            // 名字归一化后为空 → 兜底 "tray"
+            tray_item("icon", "   "),
+        ];
+        assign_order_keys_with(&mut items, &entries);
+        assert_eq!(items[0].order_key, "overflow");
+        assert_eq!(items[1].order_key, "托盘图标");
+        assert_eq!(items[2].order_key, "tray");
+    }
+
+    #[test]
+    fn order_keys_use_registry_exe_stem() {
+        let entries = vec![
+            entry("", "weixin", "Weixin"),
+            entry("", "deepseekharness", "DeepSeek Harness"),
+        ];
+        let mut items = vec![
+            tray_item("icon", "微信"),
+            tray_item("icon", " DeepSeek Harness"),
+        ];
+        assign_order_keys_with(&mut items, &entries);
+        assert_eq!(items[0].order_key, "weixin");
+        assert_eq!(items[1].order_key, "deepseekharness");
+    }
+
+    #[test]
+    fn order_keys_suffix_duplicate_instances() {
+        // 本机两个 QQ 账号共用同一个注册表条目 → 同一 base 的两个实例
+        let entries = vec![entry("", "qq", "QQ")];
+        let mut items = vec![
+            tray_item("icon", " QQ: 111 声音: 开启"),
+            tray_item("icon", " QQ: 222 声音: 开启"),
+            tray_item("overflow", "显示隐藏的图标"),
+        ];
+        assign_order_keys_with(&mut items, &entries);
+        assert_eq!(items[0].order_key, "qq#0");
+        assert_eq!(items[1].order_key, "qq#1");
+        // overflow 不加序号
+        assert_eq!(items[2].order_key, "overflow");
+    }
+
+    #[test]
+    fn order_keys_are_stable_across_tooltip_noise() {
+        // 同一个 base，tooltip 里状态文本变化（真实托盘刷新会变）时 key 不变
+        let entries = vec![entry("", "qq", "QQ")];
+        let mut a = vec![tray_item("icon", " QQ: 111 声音: 开启")];
+        let mut b = vec![tray_item("icon", " QQ: 111 声音: 关闭")];
+        assign_order_keys_with(&mut a, &entries);
+        assign_order_keys_with(&mut b, &entries);
+        assert_eq!(a[0].order_key, "qq");
+        assert_eq!(b[0].order_key, "qq");
     }
 
     /// 本机冒烟：读真实注册表，确认能解出带 alpha 的 PNG data URL。

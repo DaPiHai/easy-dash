@@ -11,6 +11,8 @@ pub struct TrayItem {
     pub kind: String,
     /// PNG data URL（截图裁剪得到，可能为 None）
     pub icon: Option<String>,
+    /// 跨刷新稳定的排序 key（exe 主名 + 同 base 序号；overflow 为 "overflow"）
+    pub order_key: String,
     /// 屏幕物理像素坐标（用于 SendInput 点击）
     pub x: i32,
     pub y: i32,
@@ -127,6 +129,9 @@ pub struct AppEntry {
     pub icon: Option<String>,
     /// 启动目标：.lnk/.url 路径，或 "shell:AppsFolder\<AUMID>"
     pub launch: String,
-    /// "classic" | "uwp"
+    /// 启动参数（导入的自定义应用可带；内置条目为空）
+    #[serde(default)]
+    pub args: String,
+    /// "classic" | "uwp" | "import"
     pub kind: String,
 }

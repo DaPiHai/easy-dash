@@ -28,6 +28,16 @@
           aria-label="搜索应用"
         />
         <span id="ac-count" class="ac-count"></span>
+        <button id="ac-import" class="ac-import" type="button" title="导入应用（.exe / .lnk / .url）">
+          <span class="ac-import-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+          </span>
+          <span id="ac-import-label">导入</span>
+        </button>
         <button id="ac-refresh" class="ac-refresh" type="button" title="刷新应用列表">
           <span class="ac-refresh-icon" aria-hidden="true">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -49,10 +59,16 @@
       <!-- 启动失败提示（3s 后消失） -->
       <div id="ac-error" class="ac-error hidden"></div>
 
+      <!-- 导入/移除结果提示（成功绿色，失败红色；3s 后消失） -->
+      <div id="ac-toast" class="ac-toast hidden"></div>
+
       <!-- 底部快捷键提示 -->
-      <div class="ac-hint">Enter 打开 · Esc 关闭 · Alt+Space 切换</div>
+      <div class="ac-hint">Enter 打开 · Esc 关闭 · Alt+Space 切换<span id="ac-drag-hint"> · 拖拽排序</span></div>
     </div>
   </div>
+
+  <!-- 导入应用的右键菜单（fixed 定位在鼠标处） -->
+  <div id="ac-menu" class="ac-menu hidden"></div>
 
   <script>
     // 独立于模块的错误捕获：模块脚本语法/加载失败也能把原因显示出来

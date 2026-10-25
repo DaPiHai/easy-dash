@@ -254,6 +254,11 @@ pub fn tray_click(
         let tray = state.tray.lock().unwrap();
         tray.get(index).cloned().ok_or_else(|| "托盘项不存在".to_string())?
     };
+    let own_hwnds = state
+        .own_hwnds
+        .lock()
+        .map(|v| v.clone())
+        .unwrap_or_default();
     let button = match button.as_str() {
         "right" => "right",
         _ => "left",
@@ -275,7 +280,7 @@ pub fn tray_click(
             let _ = dock.set_ignore_cursor_events(false);
         }
         // 迁移应用弹出的菜单/浮层到顶栏图标下方（识别不到时保持原生位置）
-        let _ = winapi::tray::relocate_popup(&before, anchor, (cx, cy));
+        let _ = winapi::tray::relocate_popup(&before, anchor, (cx, cy), &own_hwnds);
     });
     Ok(())
 }
@@ -510,7 +515,124 @@ pub fn launch_app_entry(app: AppHandle, state: State<AppState>, id: String) -> R
     let Some(entry) = entry else {
         return Err("应用不存在（列表可能已更新，请刷新后重试）".into());
     };
-    winapi::launcher::launch(&entry.launch, "")?;
+    winapi::launcher::launch(&entry.launch, &entry.args)?;
     crate::app_center::hide(&app);
     Ok(())
+}
+
+// ==================== 排序 / 导入应用 ====================
+
+/// 保存顶栏托盘图标自定义顺序（order = TrayItem.orderKey 列表）
+#[tauri::command]
+pub fn set_tray_order(
+    app: AppHandle,
+    state: State<AppState>,
+    order: Vec<String>,
+) -> Result<(), String> {
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.tray_order = order;
+        config::save(&app, &cfg)?;
+    }
+    let cfg = state.config.lock().unwrap().clone();
+    let _ = app.emit("config-changed", &cfg);
+    crate::tray_mirror::request_refresh(&app);
+    Ok(())
+}
+
+/// 保存应用中心自定义顺序（order = AppEntry.id 列表），并立即重排缓存
+#[tauri::command]
+pub fn set_app_order(
+    app: AppHandle,
+    state: State<AppState>,
+    order: Vec<String>,
+) -> Result<(), String> {
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.app_order = order;
+        config::save(&app, &cfg)?;
+    }
+    let cfg = state.config.lock().unwrap().clone();
+    let _ = app.emit("config-changed", &cfg);
+    crate::apps::reapply_order(&app);
+    Ok(())
+}
+
+/// 打开系统文件选择框，返回选中的 exe/lnk/url 路径（取消返回 None）
+#[tauri::command]
+pub async fn pick_import_file(app: AppHandle) -> Result<Option<String>, String> {
+    let owner = app
+        .get_webview_window("launcher")
+        .and_then(|w| winapi::common::tauri_hwnd(&w))
+        .map(|h| h.0 as isize)
+        .unwrap_or(0);
+    blocking(move || winapi::file_dialog::pick_app_file(owner)).await
+}
+
+/// 导入一个应用到应用中心（写入 config.importedApps + 缓存）
+#[tauri::command]
+pub async fn import_app(app: AppHandle, path: String) -> Result<AppEntry, String> {
+    let app2 = app.clone();
+    blocking(move || import_app_inner(&app2, &path)).await
+}
+
+fn import_app_inner(app: &AppHandle, raw_path: &str) -> Result<AppEntry, String> {
+    let path = winapi::imports::validate_import_path(raw_path)?;
+    let entry = winapi::imports::make_entry(&path, "", "")?;
+    let state = app.state::<AppState>();
+
+    {
+        let cfg = state.config.lock().unwrap();
+        if cfg
+            .imported_apps
+            .iter()
+            .any(|a| winapi::imports::import_id(&a.path) == entry.id)
+        {
+            return Err("该应用已在应用中心中".into());
+        }
+    }
+    {
+        let apps = state.apps.lock().unwrap();
+        if apps.iter().any(|a| a.id == entry.id || same_launch(&a.launch, &entry.launch)) {
+            return Err("该应用已在应用中心中".into());
+        }
+    }
+
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.imported_apps.push(config::ImportedApp {
+            name: entry.name.clone(),
+            path: path.clone(),
+            args: String::new(),
+        });
+        config::save(app, &cfg)?;
+    }
+    crate::apps::cache_upsert(app, entry.clone());
+    let cfg = state.config.lock().unwrap().clone();
+    let _ = app.emit("config-changed", &cfg);
+    Ok(entry)
+}
+
+/// 移除一个导入应用（不会卸载程序，只从应用中心移除）
+#[tauri::command]
+pub fn remove_imported_app(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
+    {
+        let mut cfg = state.config.lock().unwrap();
+        let before = cfg.imported_apps.len();
+        cfg.imported_apps
+            .retain(|a| winapi::imports::import_id(&a.path) != id);
+        if cfg.imported_apps.len() == before {
+            return Err("未找到该导入应用".into());
+        }
+        cfg.app_order.retain(|x| x != &id);
+        config::save(&app, &cfg)?;
+    }
+    crate::apps::cache_remove(&app, &id);
+    let cfg = state.config.lock().unwrap().clone();
+    let _ = app.emit("config-changed", &cfg);
+    Ok(())
+}
+
+fn same_launch(a: &str, b: &str) -> bool {
+    a.replace('/', "\\").eq_ignore_ascii_case(&b.replace('/', "\\"))
 }

@@ -65,6 +65,11 @@ pub fn run() {
             commands::get_apps,
             commands::refresh_apps,
             commands::launch_app_entry,
+            commands::set_tray_order,
+            commands::set_app_order,
+            commands::pick_import_file,
+            commands::import_app,
+            commands::remove_imported_app,
         ])
         .setup(|app| {
             // 加载（或初始化）配置
