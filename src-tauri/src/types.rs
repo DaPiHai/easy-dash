@@ -115,3 +115,18 @@ pub struct BtDevice {
     pub address: u64,
     pub connected: bool,
 }
+
+/// 应用中心条目（Start Menu 快捷方式 / Windows 打包应用）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppEntry {
+    /// 稳定 id："lnk:<路径小写>" / "uwp:<AUMID>"
+    pub id: String,
+    pub name: String,
+    /// 48px PNG data URL（可能为 None，前端用字母占位）
+    pub icon: Option<String>,
+    /// 启动目标：.lnk/.url 路径，或 "shell:AppsFolder\<AUMID>"
+    pub launch: String,
+    /// "classic" | "uwp"
+    pub kind: String,
+}

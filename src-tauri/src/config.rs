@@ -26,6 +26,8 @@ pub struct Config {
     pub notification_center: bool,
     /// 顶栏右侧 → 控制中心
     pub control_center: bool,
+    /// 应用中心全局热键（默认 Alt+Space）
+    pub app_center_hotkey: String,
 }
 
 fn default_true() -> bool {
@@ -64,6 +66,7 @@ impl Default for Config {
             tray_icons: default_true(),
             notification_center: default_true(),
             control_center: default_true(),
+            app_center_hotkey: "alt+space".into(),
         }
     }
 }

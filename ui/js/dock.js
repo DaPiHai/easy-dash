@@ -435,7 +435,7 @@ function syncSize() {
 }
 
 document.getElementById("grid").addEventListener("click", () => {
-  invoke("toggle_overview").catch(() => {});
+  invoke("toggle_app_center").catch(() => {});
 });
 
 // ---------- 自愈：错误横幅 + 心跳 + 兜底轮询 ----------

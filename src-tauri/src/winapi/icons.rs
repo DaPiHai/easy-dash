@@ -3,14 +3,17 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use windows::core::{GUID, PCWSTR};
-use windows::Win32::Foundation::{BOOL, HWND};
+use windows::Win32::Foundation::{BOOL, HWND, SIZE};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC,
     BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HBITMAP, HGDIOBJ,
 };
 use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
-use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+use windows::Win32::System::Com::{CoInitializeEx, IBindCtx, COINIT_APARTMENTTHREADED};
+use windows::Win32::UI::Shell::{
+    IShellItemImageFactory, SHCreateItemFromParsingName, SHGetFileInfoW, SHFILEINFOW,
+    SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY, SHGFI_ICON, SHGFI_LARGEICON,
+};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IPropertyStore, PROPERTYKEY, SHGetPropertyStoreForWindow,
 };
@@ -495,8 +498,7 @@ pub fn window_icon_data_url(hwnd: HWND) -> Option<String> {
 }
 
 /// 从文件路径提取图标（用于固定应用的启动项）
-pub fn file_icon_data_url(path: &str) -> Option<String> {
-    let wpath = super::common::to_wide(path);
+pub fn file_icon_data_url(path: &str) -> Option<String> {    let wpath = super::common::to_wide(path);
     let mut sfi = SHFILEINFOW::default();
     let ok = unsafe {
         SHGetFileInfoW(
@@ -515,4 +517,200 @@ pub fn file_icon_data_url(path: &str) -> Option<String> {
         let _ = DestroyIcon(sfi.hIcon);
     }
     url
+}
+
+/// 通过 Shell 图标工厂取任意尺寸的透明图标（PNG data URL，size 约 48–64）。
+///
+/// 走 `IShellItemImageFactory`：比 SHGetFileInfo（只有 32px 系统图标尺寸）清晰得多，
+/// 且返回带 alpha 的 32bpp 位图，浅色背景上不会出现白底。
+/// 该函数会在应用中心后台线程（MTA + RoInitialize）上调用；
+/// 任何失败只返回 None，由上层回退 `file_icon_data_url`。
+pub fn shell_item_icon_png(path: &str, size: u32) -> Option<String> {
+    let size = size.clamp(16, 256);
+    let (mut rgba, w, h) = shell_image_rgba(path, size)?;
+    // Shell 返回的位图可能是预乘 alpha，也可能是"全零 alpha 的不透明图"
+    normalize_icon_alpha(&mut rgba);
+
+    let mut img = image::RgbaImage::from_raw(w as u32, h as u32, rgba)?;
+    // 应用中心只需要 48px：BIGGERSIZEOK 可能返回 256px 大图，这里缩下去（保透明）
+    if w as u32 > 48 || h as u32 > 48 {
+        let scale = 48.0 / (w.max(h) as f32);
+        let nw = ((w as f32 * scale).round() as u32).max(1);
+        let nh = ((h as f32 * scale).round() as u32).max(1);
+        img = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Lanczos3);
+    }
+    let (ow, oh) = (img.width() as i32, img.height() as i32);
+    png_data_url(img.into_raw(), ow, oh)
+}
+
+/// 用 Shell 图标工厂取原始 RGBA（已做 BGRA→RGBA，未做 alpha 归一化）。
+/// 单独拆出来便于冒烟测试观察 Shell 返回的 alpha 形态。
+fn shell_image_rgba(path: &str, size: u32) -> Option<(Vec<u8>, i32, i32)> {
+    let wpath = super::common::to_wide(path);
+    // Shell 项创建失败（路径不存在 / 无权限）直接放弃
+    let factory: IShellItemImageFactory = unsafe {
+        SHCreateItemFromParsingName(PCWSTR(wpath.as_ptr()), None::<&IBindCtx>)
+    }
+    .ok()?;
+    let hbmp: HBITMAP = unsafe {
+        factory.GetImage(
+            SIZE {
+                cx: size as i32,
+                cy: size as i32,
+            },
+            SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+        )
+    }
+    .ok()?;
+
+    // HBITMAP → RGBA：借一个内存 DC 做 GetDIBits（bitmap_to_rgba 内部已交换 BGRA→RGBA）
+    let raw = unsafe {
+        let hdc_screen = GetDC(None);
+        let mem = CreateCompatibleDC(hdc_screen);
+        let out = bitmap_to_rgba(mem, hbmp);
+        let _ = DeleteDC(mem);
+        let _ = ReleaseDC(None, hdc_screen);
+        out
+    };
+    unsafe {
+        let _ = DeleteObject(HGDIOBJ(hbmp.0));
+    }
+    raw
+}
+
+/// 归一化 Shell 图标的 alpha：
+/// - 全零 alpha（Shell 有时返回不带 alpha 的帧）→ 视为不透明，避免整图变透明；
+/// - 否则若所有半透明像素的颜色都不超过 alpha，判定为预乘 alpha 并还原；
+/// - 已存在「颜色 > alpha」的像素说明是直通 alpha，保持原样。
+fn normalize_icon_alpha(buf: &mut [u8]) {
+    let mut any_alpha = false;
+    let mut any_translucent = false;
+    let mut channel_gt_alpha = false;
+    for px in buf.chunks_exact(4) {
+        let a = px[3];
+        if a != 0 {
+            any_alpha = true;
+        }
+        if a != 0 && a != 255 {
+            any_translucent = true;
+            if px[0].max(px[1]).max(px[2]) > a {
+                channel_gt_alpha = true;
+            }
+        }
+    }
+    if !any_alpha {
+        for px in buf.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        return;
+    }
+    if any_translucent && !channel_gt_alpha {
+        for px in buf.chunks_exact_mut(4) {
+            let a = px[3] as u32;
+            if a > 0 && a < 255 {
+                for c in 0..3 {
+                    px[c] = ((px[c] as u32 * 255 / a).min(255)) as u8;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shell_icon_tests {
+    use super::*;
+
+    /// 在目录里递归找第一个 .lnk（冒烟测试用，深度有限）
+    fn first_shortcut(dir: &std::path::Path, depth: usize) -> Option<std::path::PathBuf> {
+        if depth > 4 {
+            return None;
+        }
+        let mut dirs = Vec::new();
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            let p = e.path();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                dirs.push(p);
+            } else if p
+                .extension()
+                .map(|x| x.eq_ignore_ascii_case("lnk"))
+                .unwrap_or(false)
+            {
+                return Some(p);
+            }
+        }
+        dirs.sort();
+        dirs.into_iter()
+            .find_map(|d| first_shortcut(&d, depth + 1))
+    }
+
+    /// 本机冒烟：Shell 图标工厂取真实 .lnk 的 48px 透明 PNG。
+    /// 手动执行：`cargo test --lib -- --ignored smoke_shell_item_icon --nocapture`
+    #[test]
+    #[ignore]
+    fn smoke_shell_item_icon() {
+        ensure_com();
+        let mut roots = Vec::new();
+        if let Ok(p) = std::env::var("APPDATA") {
+            roots.push(format!(r"{p}\Microsoft\Windows\Start Menu\Programs"));
+        }
+        if let Ok(p) = std::env::var("ProgramData") {
+            roots.push(format!(r"{p}\Microsoft\Windows\Start Menu\Programs"));
+        }
+        let lnk = match roots
+            .iter()
+            .map(std::path::Path::new)
+            .find_map(|root| first_shortcut(root, 0))
+        {
+            Some(p) => p,
+            None => {
+                eprintln!("[icons] 本机 Start Menu 没找到 .lnk，跳过");
+                return;
+            }
+        };
+        let path = lnk.to_string_lossy().to_string();
+        eprintln!("[icons] 测试快捷方式: {path}");
+
+        // 观察 Shell 返回的原始 alpha 形态（确认预乘/直通判定是否被触发）
+        if let Some((raw, w, h)) = shell_image_rgba(&path, 48) {
+            let (mut translucent, mut gt, mut zero, mut opaque) = (0usize, 0usize, 0usize, 0usize);
+            for px in raw.chunks_exact(4) {
+                match px[3] {
+                    0 => zero += 1,
+                    255 => opaque += 1,
+                    a => {
+                        translucent += 1;
+                        if px[0].max(px[1]).max(px[2]) > a {
+                            gt += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "[icons] 原始 {w}x{h}：半透明 {translucent}、全透明 {zero}、不透明 {opaque}、通道>alpha {gt}"
+            );
+        }
+
+        let url = shell_item_icon_png(&path, 48).expect("应能取到 PNG 图标");
+        assert!(url.starts_with("data:image/png;base64,"), "应为 PNG data URL");
+        let b64 = url.split(',').nth(1).expect("data URL 格式");
+        let bytes = STANDARD.decode(b64).expect("base64 解码");
+        let img = image::load_from_memory(&bytes)
+            .expect("PNG 解码")
+            .to_rgba8();
+        eprintln!(
+            "[icons] 输出 {}x{}，PNG {} 字节",
+            img.width(),
+            img.height(),
+            bytes.len()
+        );
+        assert_eq!(img.width(), img.height(), "图标应为正方形");
+        assert!(img.width() >= 16 && img.width() <= 48, "尺寸应在 16..=48");
+        let opaque = img.pixels().filter(|p| p[3] == 255).count();
+        let transparent = img.pixels().filter(|p| p[3] == 0).count();
+        assert!(opaque > 0, "图标应包含不透明像素");
+        eprintln!(
+            "[icons] 输出 alpha：不透明 {opaque}、全透明 {transparent} / {}",
+            img.width() * img.height()
+        );
+    }
 }

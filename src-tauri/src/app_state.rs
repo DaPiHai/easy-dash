@@ -4,7 +4,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
 
 use crate::config::Config;
-use crate::types::{NotificationItem, TrayItem};
+use crate::types::{AppEntry, NotificationItem, TrayItem};
 
 /// 全局共享状态
 pub struct AppState {
@@ -63,6 +63,17 @@ pub struct AppState {
     /// 通知刷新请求通道
     pub notif_tx: Sender<()>,
     pub notif_rx: Mutex<Option<Receiver<()>>>,
+    /// 应用中心是否处于打开状态
+    pub app_center_open: AtomicBool,
+    /// 应用中心条目缓存（Start Menu 快捷方式 + 打包应用）
+    pub apps: Mutex<Vec<AppEntry>>,
+    /// 应用列表刷新请求通道
+    pub apps_tx: Sender<()>,
+    pub apps_rx: Mutex<Option<Receiver<()>>>,
+    /// 后台是否正在枚举应用列表（避免启动阶段重复排队两次枚举）
+    pub apps_refreshing: AtomicBool,
+    /// 应用列表最近一次刷新完成时间（毫秒；0 = 尚未完成）
+    pub apps_refreshed_ms: AtomicU64,
 }
 
 impl AppState {
@@ -70,6 +81,7 @@ impl AppState {
         let (tx, rx) = std::sync::mpsc::channel::<isize>();
         let (tray_tx, tray_rx) = std::sync::mpsc::channel::<()>();
         let (notif_tx, notif_rx) = std::sync::mpsc::channel::<()>();
+        let (apps_tx, apps_rx) = std::sync::mpsc::channel::<()>();
         Self {
             icon_cache: Mutex::new(HashMap::new()),
             aumid_names: Mutex::new(HashMap::new()),
@@ -95,6 +107,12 @@ impl AppState {
             notifications: Mutex::new(Vec::new()),
             notif_tx,
             notif_rx: Mutex::new(Some(notif_rx)),
+            app_center_open: AtomicBool::new(false),
+            apps: Mutex::new(Vec::new()),
+            apps_tx,
+            apps_rx: Mutex::new(Some(apps_rx)),
+            apps_refreshing: AtomicBool::new(false),
+            apps_refreshed_ms: AtomicU64::new(0),
         }
     }
 }

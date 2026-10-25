@@ -6,9 +6,10 @@
 - **通知中心**：点顶栏时钟展开，**左右两栏** —— 左栏大时钟 + 日期 + 通知列表（按应用分组、多条通知堆叠显示，真实应用图标），右栏中文月历（**接入中国法定节假日与调休「休/班」标记**）+ **媒体播放控件**（SMTC：封面/标题/歌手/进度/上一首·播放暂停·下一首）
 - **控制中心**：点顶栏右侧状态区展开，含 Wi-Fi / 蓝牙 / 飞行模式 / 深色模式开关、**Wi-Fi 网络连接（扫描、密码、断开）与蓝牙设备连接/断开**、音量与亮度滑条、电源模式三档、设置/锁屏/睡眠/关机/重启/注销
 - **任务托盘镜像**：Windows 系统托盘图标实时同步到顶栏（真实透明图标），点击后的应用菜单/浮层**锚定在顶栏图标下方**，左键/右键行为与直接点任务栏托盘一致
-- **Dock 栏**：底部居中胶囊应用栏，固定应用 + 运行指示点，悬停放大动效，右键固定/取消固定
+- **Dock 栏**：底部居中胶囊应用栏，固定应用 + 运行指示点，悬停放大动效，右键固定/取消固定；右侧**九点格按钮 → 应用中心**
+- **应用中心**：全屏 GNOME 风格应用网格（Dock 九点格或 `Alt+Space` 打开），汇集 Start Menu 经典应用与 Windows 打包应用，支持搜索、方向键导航、回车/点击启动；与活动概览互斥，顶栏/Dock 保持在上层
 - **活动概览**：全屏概览所有打开的窗口（实时截图缩略图），点击切换，`Esc` 关闭
-- **全局热键**：`Alt+F1` 打开/关闭活动概览
+- **全局热键**：`Alt+F1` 打开/关闭活动概览；`Alt+Space` 打开/关闭应用中心
 - **全屏自动隐藏**：前台应用全屏时，顶栏与 Dock 自动滑出隐藏
 - **系统托盘**：左键切换概览，右键菜单（打开概览 / 重载配置 / 退出）
 
@@ -21,7 +22,8 @@ NotifyIconSettings 快照 / 版本信息资源）、PrintWindow 窗口截图、A
 ShellExecute 启动、AppBar 预留顶栏空间、全屏前台检测、UI Automation 托盘枚举与弹窗迁移
 （Win11 XAML 任务栏）、Core Audio 音量、DDC/CI 亮度、WLAN API（射频/SSID/扫描/连接）、
 WinRT Radio 蓝牙开关与 Win32 蓝牙设备/音频服务连接、winsqlite3 只读通知库解析、
-WinRT SMTC 媒体播放控制。
+WinRT SMTC 媒体播放控制、WinRT PackageManager/AppListEntry 打包应用枚举（本地化名称与
+Logo）、Shell 图标工厂（IShellItemImageFactory，任意尺寸透明图标）。
 
 ## 开发
 
@@ -44,7 +46,8 @@ npm run build        # 构建 release（NSIS 安装包）
   "reserveTopbarSpace": true,
   "trayIcons": true,
   "notificationCenter": true,
-  "controlCenter": true
+  "controlCenter": true,
+  "appCenterHotkey": "alt+space"
 }
 ```
 
@@ -66,6 +69,9 @@ npm run build        # 构建 release（NSIS 安装包）
 - UWP 应用（如「设置」）固定到 Dock 时记录 AppsFolder 启动器，图标取自包清单
 - 原生任务栏仍然存在，如需完全 GNOME 化可在任务栏设置中开启自动隐藏
 - Dock 中的未固定应用按**窗口打开顺序**排列（不随聚焦变化）；UWP 应用失焦挂起后（DWM cloaked=2）仍保留在 Dock 中，其他虚拟桌面的窗口也会显示
+- 应用中心列表 = Start Menu（用户 + 公共）快捷方式 + WinRT 打包应用；启动时后台枚举，超过 5 分钟或手动刷新时重扫；**控制面板项、分类/最近使用/拼音搜索暂不支持**（v1 仅名称子串过滤）
+- 打包应用枚举失败（权限/系统异常）时**降级为仅经典应用**并在日志记录；个别应用无 AppListEntry 时不展示；图标统一 48px，提取失败回退字母占位
+- `Alt+Space` 被 easy-dash 全局占用，**会覆盖系统「窗口菜单」快捷键**；若被其它程序占用导致注册失败，仅日志提示（Dock 入口仍可用，可在 config.json 改 `appCenterHotkey` 后重载配置）
 
 ## 管理员权限说明
 

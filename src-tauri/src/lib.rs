@@ -1,4 +1,6 @@
+mod app_center;
 mod app_state;
+mod apps;
 mod commands;
 mod config;
 mod controls;
@@ -58,6 +60,11 @@ pub fn run() {
             commands::get_bt_devices,
             commands::set_bt_connected,
             commands::open_settings_page,
+            commands::toggle_app_center,
+            commands::close_app_center,
+            commands::get_apps,
+            commands::refresh_apps,
+            commands::launch_app_entry,
         ])
         .setup(|app| {
             // 加载（或初始化）配置
@@ -74,7 +81,7 @@ pub fn run() {
             {
                 let state = app.state::<app_state::AppState>();
                 let mut own = state.own_hwnds.lock().unwrap();
-                for label in ["topbar", "dock", "overview"] {
+                for label in ["topbar", "dock", "overview", "launcher"] {
                     if let Some(w) = app.get_webview_window(label) {
                         if let Some(h) = winapi::common::tauri_hwnd(&w) {
                             own.push(h.0 as isize);
@@ -96,17 +103,8 @@ pub fn run() {
             // 托盘
             tray::create(app)?;
 
-            // 全局热键（Alt+F1 打开概览）
-            {
-                use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let hotkey = cfg.hotkey.clone();
-                app.global_shortcut().on_shortcut(hotkey.as_str(), |app, _s, event| {
-                    use tauri_plugin_global_shortcut::ShortcutState;
-                    if event.state() == ShortcutState::Pressed {
-                        overview::toggle(app);
-                    }
-                })?;
-            }
+            // 全局热键：Alt+F1 概览 + Alt+Space 应用中心（失败只记录日志，不阻断启动）
+            register_hotkeys(app.handle(), &cfg);
 
             // 后台轮询：窗口列表 + 全屏检测
             monitor::spawn(app.handle().clone());
@@ -115,6 +113,9 @@ pub fn run() {
             // 顶栏任务托盘镜像 / 通知中心工作线程
             tray_mirror::spawn(app.handle().clone());
             notifications::spawn(app.handle().clone());
+            // 应用中心数据线程（启动即后台枚举，首次打开应用中心无需等待）
+            apps::spawn(app.handle().clone());
+            apps::request_refresh(app.handle());
             if cfg.tray_icons {
                 tray_mirror::request_refresh(app.handle());
             }
@@ -215,5 +216,56 @@ fn create_windows(app: &tauri::App) -> tauri::Result<()> {
         winapi::common::remove_win11_chrome(h);
     }
 
+    // 应用中心（全屏网格，默认隐藏）
+    let launcher = WebviewWindowBuilder::new(
+        app,
+        "launcher",
+        WebviewUrl::App("launcher.html".into()),
+    )
+    .title("easy-dash launcher")
+    .inner_size(sw, sh)
+    .position(0.0, 0.0)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(false)
+    .focused(false)
+    .visible(false)
+    .build()?;
+    if let Some(h) = winapi::common::tauri_hwnd(&launcher) {
+        winapi::common::remove_win11_chrome(h);
+    }
+
     Ok(())
+}
+
+/// 注册全局热键：`hotkey` = 活动概览，`appCenterHotkey` = 应用中心。
+/// 任一注册失败只记录日志（例如被其它程序占用），不阻断应用启动。
+pub(crate) fn register_hotkeys(app: &tauri::AppHandle, cfg: &config::Config) {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+
+    let overview_hotkey = cfg.hotkey.clone();
+    if let Err(e) = gs.on_shortcut(overview_hotkey.as_str(), |app, _s, event| {
+        if event.state() == ShortcutState::Pressed {
+            overview::toggle(app);
+        }
+    }) {
+        eprintln!("[easy-dash] 概览热键注册失败（{overview_hotkey}）：{e}");
+    }
+
+    let app_center_hotkey = cfg.app_center_hotkey.clone();
+    if let Err(e) = gs.on_shortcut(app_center_hotkey.as_str(), |app, _s, event| {
+        if event.state() == ShortcutState::Pressed {
+            app_center::toggle(app);
+        }
+    }) {
+        eprintln!("[easy-dash] 应用中心热键注册失败（{app_center_hotkey}）：{e}");
+    }
 }

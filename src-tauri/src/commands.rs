@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::config;
-use crate::types::{BtDevice, MediaInfo, NotificationItem, QuickState, TrayItem, WifiNetwork};
+use crate::types::{AppEntry, BtDevice, MediaInfo, NotificationItem, QuickState, TrayItem, WifiNetwork};
 use crate::winapi;
 
 /// 顶栏常态高度（逻辑像素）
@@ -25,13 +25,16 @@ pub fn close_overview(app: AppHandle) {
 }
 
 #[tauri::command]
-pub fn activate_window(_app: AppHandle, id: i64) {
+pub fn activate_window(app: AppHandle, id: i64) {
+    // 激活窗口时应用中心必须先收起，否则应用会被全屏网格盖住
+    crate::app_center::hide(&app);
     winapi::activate::activate_id(id);
 }
 
 /// Dock 点击：点击前已是前台 → 最小化；最小化中 → 还原；否则激活
 #[tauri::command]
-pub fn toggle_window(state: State<AppState>, _app: AppHandle, id: i64) {
+pub fn toggle_window(state: State<AppState>, app: AppHandle, id: i64) {
+    crate::app_center::hide(&app);
     let last_fg = state
         .last_foreign_fg
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -39,7 +42,9 @@ pub fn toggle_window(state: State<AppState>, _app: AppHandle, id: i64) {
 }
 
 #[tauri::command]
-pub fn launch_app(path: String, args: Option<String>) -> Result<(), String> {
+pub fn launch_app(app: AppHandle, path: String, args: Option<String>) -> Result<(), String> {
+    // Dock / 固定项启动应用时收起应用中心
+    crate::app_center::hide(&app);
     winapi::launcher::launch(&path, args.as_deref().unwrap_or(""))
 }
 
@@ -76,18 +81,8 @@ pub fn do_reload_config(app: &AppHandle) -> Result<(), String> {
         let state = app.state::<AppState>();
         *state.config.lock().unwrap() = cfg.clone();
     }
-    // 重新注册热键
-    {
-        use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-        let gs = app.global_shortcut();
-        let _ = gs.unregister_all();
-        let hotkey = cfg.hotkey.clone();
-        let _ = gs.on_shortcut(hotkey.as_str(), |app, _s, event| {
-            if event.state() == ShortcutState::Pressed {
-                crate::overview::toggle(app);
-            }
-        });
-    }
+    // 重新注册热键（概览 + 应用中心）
+    crate::register_hotkeys(app, &cfg);
     let _ = app.emit("config-changed", &cfg);
     Ok(())
 }
@@ -465,4 +460,57 @@ pub async fn open_settings_page(page: String) -> Result<(), String> {
         winapi::launcher::launch(uri, "")
     })
     .await
+}
+
+// ==================== 应用中心 ====================
+
+#[tauri::command]
+pub fn toggle_app_center(app: AppHandle) {
+    crate::app_center::toggle(&app);
+}
+
+#[tauri::command]
+pub fn close_app_center(app: AppHandle) {
+    crate::app_center::hide(&app);
+}
+
+/// 应用中心列表（缓存）。缓存为空或超过 5 分钟时触发后台刷新，UI 通过
+/// `apps-changed` 事件收到通知后重新拉取。
+#[tauri::command]
+pub fn get_apps(app: AppHandle, state: State<AppState>) -> Vec<AppEntry> {
+    let (apps, refreshed) = {
+        let apps = state.apps.lock().unwrap().clone();
+        (
+            apps,
+            state
+                .apps_refreshed_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    };
+    let stale = refreshed == 0
+        || crate::app_state::now_ms().saturating_sub(refreshed) > 5 * 60 * 1000;
+    if apps.is_empty() || stale {
+        crate::apps::request_refresh(&app);
+    }
+    apps
+}
+
+#[tauri::command]
+pub fn refresh_apps(app: AppHandle) {
+    crate::apps::request_refresh(&app);
+}
+
+/// 启动应用中心里的某个应用；成功后才收起应用中心。
+#[tauri::command]
+pub fn launch_app_entry(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
+    let entry = {
+        let apps = state.apps.lock().unwrap();
+        apps.iter().find(|a| a.id == id).cloned()
+    };
+    let Some(entry) = entry else {
+        return Err("应用不存在（列表可能已更新，请刷新后重试）".into());
+    };
+    winapi::launcher::launch(&entry.launch, "")?;
+    crate::app_center::hide(&app);
+    Ok(())
 }

@@ -30,6 +30,8 @@ pub fn toggle(app: &AppHandle) {
 }
 
 pub fn show(app: &AppHandle) {
+    // 与全屏应用中心互斥：先收起应用中心
+    crate::app_center::hide(app);
     // 顶栏面板（通知中心/控制中心）先收起：概览打开时面板会浮在概览之上
     let _ = app.emit_to("topbar", "close-panels", ());
     let state = app.state::<AppState>();
