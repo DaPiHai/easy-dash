@@ -4,6 +4,7 @@ mod apps;
 mod commands;
 mod config;
 mod controls;
+mod manager;
 mod monitor;
 mod notifications;
 mod notify_db;
@@ -70,6 +71,12 @@ pub fn run() {
             commands::pick_import_file,
             commands::import_app,
             commands::remove_imported_app,
+            commands::toggle_manager,
+            commands::close_manager,
+            commands::get_manager_info,
+            commands::update_preferences,
+            commands::add_pinned_app,
+            commands::open_config_folder,
         ])
         .setup(|app| {
             // 加载（或初始化）配置
@@ -86,7 +93,7 @@ pub fn run() {
             {
                 let state = app.state::<app_state::AppState>();
                 let mut own = state.own_hwnds.lock().unwrap();
-                for label in ["topbar", "dock", "overview", "launcher"] {
+                for label in ["topbar", "dock", "overview", "launcher", "manager"] {
                     if let Some(w) = app.get_webview_window(label) {
                         if let Some(h) = winapi::common::tauri_hwnd(&w) {
                             own.push(h.0 as isize);
@@ -109,7 +116,9 @@ pub fn run() {
             tray::create(app)?;
 
             // 全局热键：Alt+F1 概览 + Alt+Space 应用中心（失败只记录日志，不阻断启动）
-            register_hotkeys(app.handle(), &cfg);
+            for warning in register_hotkeys(app.handle(), &cfg) {
+                eprintln!("[easy-dash] {warning}");
+            }
 
             // 后台轮询：窗口列表 + 全屏检测
             monitor::spawn(app.handle().clone());
@@ -246,15 +255,43 @@ fn create_windows(app: &tauri::App) -> tauri::Result<()> {
         winapi::common::remove_win11_chrome(h);
     }
 
+    // 管理面板（居中浮层，默认隐藏）
+    let manager_w = 1000.0_f64.min((sw - 80.0).max(720.0));
+    let manager_h = 700.0_f64.min((sh - 120.0).max(500.0));
+    let manager = WebviewWindowBuilder::new(
+        app,
+        "manager",
+        WebviewUrl::App("manager.html".into()),
+    )
+    .title("easy-dash manager")
+    .inner_size(manager_w, manager_h)
+    .position((sw - manager_w) / 2.0, (sh - manager_h) / 2.0)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .closable(false)
+    .focused(false)
+    .visible(false)
+    .build()?;
+    if let Some(h) = winapi::common::tauri_hwnd(&manager) {
+        winapi::common::remove_win11_chrome(h);
+    }
+
     Ok(())
 }
 
 /// 注册全局热键：`hotkey` = 活动概览，`appCenterHotkey` = 应用中心。
-/// 任一注册失败只记录日志（例如被其它程序占用），不阻断应用启动。
-pub(crate) fn register_hotkeys(app: &tauri::AppHandle, cfg: &config::Config) {
+/// 返回注册失败/冲突的警告文本（调用方决定日志或展示），不阻断应用启动。
+pub(crate) fn register_hotkeys(app: &tauri::AppHandle, cfg: &config::Config) -> Vec<String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
+    let mut warnings = Vec::new();
 
     let overview_hotkey = cfg.hotkey.clone();
     if let Err(e) = gs.on_shortcut(overview_hotkey.as_str(), |app, _s, event| {
@@ -262,7 +299,9 @@ pub(crate) fn register_hotkeys(app: &tauri::AppHandle, cfg: &config::Config) {
             overview::toggle(app);
         }
     }) {
-        eprintln!("[easy-dash] 概览热键注册失败（{overview_hotkey}）：{e}");
+        warnings.push(format!(
+            "活动概览热键注册失败（{overview_hotkey}）：{e}"
+        ));
     }
 
     let app_center_hotkey = cfg.app_center_hotkey.clone();
@@ -271,6 +310,9 @@ pub(crate) fn register_hotkeys(app: &tauri::AppHandle, cfg: &config::Config) {
             app_center::toggle(app);
         }
     }) {
-        eprintln!("[easy-dash] 应用中心热键注册失败（{app_center_hotkey}）：{e}");
+        warnings.push(format!(
+            "应用中心热键注册失败（{app_center_hotkey}）：{e}"
+        ));
     }
+    warnings
 }

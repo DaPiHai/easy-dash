@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "easy-dash 三个窗口的默认能力",
-  "windows": ["topbar", "dock", "overview", "launcher"],
+  "windows": ["topbar", "dock", "overview", "launcher", "manager"],
   "permissions": ["core:default"]
 }

@@ -100,6 +100,18 @@ function bindButtons() {
       togglePanel("control");
     });
   }
+
+  const gearBtn = document.getElementById("gear-btn");
+  if (gearBtn) {
+    gearBtn.addEventListener("click", () => {
+      if (!ready) return;
+      try {
+        invoke("toggle_manager").catch(() => {});
+      } catch (e) {
+        /* Tauri 尚未注入时忽略 */
+      }
+    });
+  }
 }
 
 // ---------- 面板模块装配 ----------

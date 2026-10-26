@@ -1,9 +1,12 @@
 //! 前端可调用的 Tauri 命令
+use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::config;
-use crate::types::{AppEntry, BtDevice, MediaInfo, NotificationItem, QuickState, TrayItem, WifiNetwork};
+use crate::types::{
+    AppEntry, BtDevice, ManagerInfo, MediaInfo, NotificationItem, QuickState, TrayItem, WifiNetwork,
+};
 use crate::winapi;
 
 /// 顶栏常态高度（逻辑像素）
@@ -82,7 +85,9 @@ pub fn do_reload_config(app: &AppHandle) -> Result<(), String> {
         *state.config.lock().unwrap() = cfg.clone();
     }
     // 重新注册热键（概览 + 应用中心）
-    crate::register_hotkeys(app, &cfg);
+    for warning in crate::register_hotkeys(app, &cfg) {
+        eprintln!("[easy-dash] {warning}");
+    }
     let _ = app.emit("config-changed", &cfg);
     Ok(())
 }
@@ -635,4 +640,198 @@ pub fn remove_imported_app(app: AppHandle, state: State<AppState>, id: String) -
 
 fn same_launch(a: &str, b: &str) -> bool {
     a.replace('/', "\\").eq_ignore_ascii_case(&b.replace('/', "\\"))
+}
+
+// ==================== 管理面板 ====================
+
+#[tauri::command]
+pub fn toggle_manager(app: AppHandle) {
+    crate::manager::toggle(&app);
+}
+
+#[tauri::command]
+pub fn close_manager(app: AppHandle) {
+    crate::manager::hide(&app);
+}
+
+#[tauri::command]
+pub fn get_manager_info(app: AppHandle) -> ManagerInfo {
+    ManagerInfo {
+        version: app.package_info().version.to_string(),
+        identifier: app.config().identifier.clone(),
+        config_path: config::config_path(&app)
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    }
+}
+
+/// 管理面板「通用」页提交的偏好补丁（所有字段可选）
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PreferencesPatch {
+    pub fullscreen_hide: Option<bool>,
+    pub reserve_topbar_space: Option<bool>,
+    pub tray_icons: Option<bool>,
+    pub notification_center: Option<bool>,
+    pub control_center: Option<bool>,
+    pub hotkey: Option<String>,
+    pub app_center_hotkey: Option<String>,
+}
+
+impl PreferencesPatch {
+    /// 把补丁应用到配置；热键做 trim + 空串校验（先校验再改，避免半更新）。
+    pub fn apply(mut self, cfg: &mut config::Config) -> Result<(), String> {
+        let hotkey = self.hotkey.take().map(|s| s.trim().to_owned());
+        let app_center_hotkey = self.app_center_hotkey.take().map(|s| s.trim().to_owned());
+        if let Some(h) = hotkey.as_deref() {
+            if h.is_empty() {
+                return Err("活动概览热键不能为空".into());
+            }
+        }
+        if let Some(h) = app_center_hotkey.as_deref() {
+            if h.is_empty() {
+                return Err("应用中心热键不能为空".into());
+            }
+        }
+        if let Some(v) = self.fullscreen_hide {
+            cfg.fullscreen_hide = v;
+        }
+        if let Some(v) = self.reserve_topbar_space {
+            cfg.reserve_topbar_space = v;
+        }
+        if let Some(v) = self.tray_icons {
+            cfg.tray_icons = v;
+        }
+        if let Some(v) = self.notification_center {
+            cfg.notification_center = v;
+        }
+        if let Some(v) = self.control_center {
+            cfg.control_center = v;
+        }
+        if let Some(h) = hotkey {
+            cfg.hotkey = h;
+        }
+        if let Some(h) = app_center_hotkey {
+            cfg.app_center_hotkey = h;
+        }
+        Ok(())
+    }
+}
+
+/// 保存通用偏好并立即应用（热键重注册、AppBar 预留开关、托盘刷新），
+/// 返回热键注册警告列表供管理面板展示。
+#[tauri::command]
+pub fn update_preferences(
+    app: AppHandle,
+    state: State<AppState>,
+    patch: PreferencesPatch,
+) -> Result<Vec<String>, String> {
+    let before = state.config.lock().unwrap().clone();
+    let mut next = before.clone();
+    patch.apply(&mut next)?;
+    config::save(&app, &next)?;
+    *state.config.lock().unwrap() = next.clone();
+
+    if next.reserve_topbar_space != before.reserve_topbar_space {
+        crate::winapi::appbar::unregister_all();
+        if next.reserve_topbar_space {
+            if let Some(topbar) = app.get_webview_window("topbar") {
+                crate::winapi::appbar::register_topbar(&topbar);
+            }
+        }
+    }
+
+    let warnings = crate::register_hotkeys(&app, &next);
+    if next.tray_icons {
+        crate::tray_mirror::request_refresh(&app);
+    }
+    if next.notification_center {
+        crate::notifications::request_refresh(&app);
+    }
+    let _ = app.emit("config-changed", &next);
+    Ok(warnings)
+}
+
+/// 管理面板添加 Dock 固定应用（仅 .exe/.lnk/.url；名称自动推导）
+#[tauri::command]
+pub fn add_pinned_app(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<config::PinnedApp, String> {
+    let path = crate::winapi::imports::validate_import_path(&path)?;
+    let name = crate::winapi::imports::make_entry(&path, "", "")
+        .map(|entry| entry.name)
+        .unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone())
+        });
+
+    let mut next = state.config.lock().unwrap().clone();
+    if next
+        .pinned
+        .iter()
+        .any(|p| same_launch(&p.path, &path))
+    {
+        return Err("该应用已在 Dock 固定列表中".into());
+    }
+    let item = config::PinnedApp {
+        name,
+        path,
+        args: String::new(),
+    };
+    next.pinned.push(item.clone());
+    config::save(&app, &next)?;
+    *state.config.lock().unwrap() = next.clone();
+    let _ = app.emit("config-changed", &next);
+    Ok(item)
+}
+
+#[tauri::command]
+pub fn open_config_folder(app: AppHandle) -> Result<(), String> {
+    let path = config::config_path(&app).ok_or("无法确定配置文件路径")?;
+    crate::winapi::launcher::launch(
+        "explorer.exe",
+        &format!("/select,\"{}\"", path.display()),
+    )
+}
+
+#[cfg(test)]
+mod preference_tests {
+    use super::*;
+
+    #[test]
+    fn preferences_patch_applies_only_some_fields() {
+        let mut cfg = config::Config::default();
+        let before_fullscreen = cfg.fullscreen_hide;
+        let before_tray = cfg.tray_icons;
+        let patch = PreferencesPatch {
+            fullscreen_hide: Some(!before_fullscreen),
+            hotkey: Some("  ctrl+alt+f2  ".into()),
+            ..Default::default()
+        };
+        patch.apply(&mut cfg).expect("patch 应有效");
+        assert_eq!(cfg.fullscreen_hide, !before_fullscreen);
+        assert_eq!(cfg.hotkey, "ctrl+alt+f2");
+        assert_eq!(cfg.app_center_hotkey, "alt+space");
+        assert_eq!(cfg.tray_icons, before_tray);
+    }
+
+    #[test]
+    fn preferences_patch_rejects_empty_hotkey() {
+        let mut cfg = config::Config::default();
+        let before = cfg.hotkey.clone();
+        let before_fullscreen = cfg.fullscreen_hide;
+        let patch = PreferencesPatch {
+            hotkey: Some("   ".into()),
+            fullscreen_hide: Some(!before_fullscreen),
+            ..Default::default()
+        };
+        assert!(patch.apply(&mut cfg).is_err());
+        assert_eq!(cfg.hotkey, before);
+        // 先校验后应用：其它字段也不应被改
+        assert_eq!(cfg.fullscreen_hide, before_fullscreen);
+    }
 }

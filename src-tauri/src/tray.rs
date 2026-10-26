@@ -6,10 +6,11 @@ use tauri::App;
 use crate::overview;
 
 pub fn create(app: &App) -> tauri::Result<()> {
+    let manager = MenuItem::with_id(app, "manager", "管理面板", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "打开活动概览", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, "reload", "重载配置", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出 easy-dash", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &reload, &quit])?;
+    let menu = Menu::with_items(app, &[&manager, &open, &reload, &quit])?;
 
     let _tray = TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
@@ -17,6 +18,7 @@ pub fn create(app: &App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "manager" => crate::manager::show(app),
             "open" => overview::show(app),
             "reload" => {
                 let _ = crate::commands::do_reload_config(app);

@@ -118,6 +118,15 @@ pub struct BtDevice {
     pub connected: bool,
 }
 
+/// 管理面板「关于」信息
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagerInfo {
+    pub version: String,
+    pub identifier: String,
+    pub config_path: String,
+}
+
 /// 应用中心条目（Start Menu 快捷方式 / Windows 打包应用）
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

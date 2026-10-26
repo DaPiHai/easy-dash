@@ -227,6 +227,28 @@ body.tray-dragging * {
   border-radius: 12px;
 }
 
+/* 管理面板入口（顶栏右侧齿轮） */
+.gear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 12px;
+  color: var(--text);
+  flex: none;
+}
+
+.gear-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.gear-btn svg {
+  display: block;
+  opacity: 0.9;
+}
+
 .cc-btn:hover {
   background: rgba(255, 255, 255, 0.14);
 }
