@@ -255,9 +255,9 @@ fn create_windows(app: &tauri::App) -> tauri::Result<()> {
         winapi::common::remove_win11_chrome(h);
     }
 
-    // 管理面板（居中浮层，默认隐藏）
-    let manager_w = 1000.0_f64.min((sw - 80.0).max(720.0));
-    let manager_h = 700.0_f64.min((sh - 120.0).max(500.0));
+    // 管理面板（居中浮层，默认隐藏；外框比面板大 60px，给阴影留出淡出空间）
+    let manager_w = 1060.0_f64.min(sw - 80.0);
+    let manager_h = 760.0_f64.min(sh - 120.0);
     let manager = WebviewWindowBuilder::new(
         app,
         "manager",
