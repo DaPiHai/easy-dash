@@ -1,5 +1,5 @@
 // 顶栏任务托盘镜像：渲染系统托盘图标、hover 提示、左/右键转发到真实托盘，
-// 以及图标拖拽排序（pointer 事件；顶栏窗口只有 32px 高，HTML5 DnD 体验很差）。
+// 以及图标拖拽排序（Dock 同款「位置预览」：源项半透明留在新位置、ghost 跟手、实时让位）。
 // 数据来自 get_tray_items()；后端刷新完成后会发 tray-changed（payload 为数组）。
 import { invoke, invokeRetry, listen, escapeHtml } from "./api.js";
 
@@ -25,7 +25,7 @@ let listenBound = false;
 let fetchSeq = 0;
 
 // ---------- 拖拽状态 ----------
-let dragState = null; // { key, el, startX, startY, moved, targetEl }
+let dragState = null; // { key, el, pointerId, startX, startY, moved, ghost, grabX, grabY }
 let pendingItems = null; // 拖拽期间到达的最新列表（拖拽结束后再应用）
 let orderLock = null; // { keys: string[], until: number }
 let suppressClickUntil = 0;
@@ -66,7 +66,7 @@ export function stopTray() {
     clearInterval(timer);
     timer = null;
   }
-  resetDrag();
+  cleanupDrag();
   pendingItems = null;
   orderLock = null;
   items = [];
@@ -323,16 +323,26 @@ function clickTray(el, button) {
   }
 }
 
-// ---------- 拖拽排序 ----------
+// ---------- 拖拽排序（Dock 同款位置预览） ----------
+
+/** 当前 DOM 里的图标元素（document 顺序，不含 overflow） */
+function iconElements() {
+  if (!trayEl) return [];
+  return Array.from(trayEl.querySelectorAll('.tray-item[data-kind="icon"]'));
+}
 
 function onPointerDown(e) {
   if (e.button !== 0) return; // 只处理左键；右键留给 contextmenu
+  if (dragState) return;
   const el = e.target.closest ? e.target.closest(".tray-item") : null;
   if (!el) return;
   if (el.dataset.kind !== "icon") return; // overflow 固定不拖
   const key = el.dataset.key || "";
   if (!key) return;
+  // 只有一个图标时没有排序意义
+  if (iconElements().length < 2) return;
 
+  const r = el.getBoundingClientRect();
   dragState = {
     key,
     el,
@@ -340,7 +350,9 @@ function onPointerDown(e) {
     startX: e.clientX,
     startY: e.clientY,
     moved: false,
-    targetEl: null,
+    ghost: null,
+    grabX: e.clientX - r.left,
+    grabY: e.clientY - r.top,
   };
   // 捕获指针：拖出元素/窗口边缘也能继续收到 move/up
   try {
@@ -355,24 +367,73 @@ function onPointerMove(e) {
   if (!d) return;
   if (!d.moved) {
     if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
-    d.moved = true;
-    d.el.classList.add("dragging");
-    document.body.classList.add("tray-dragging");
-    hideTooltip();
+    beginDrag();
   }
-  updateDropTarget(e.clientX, e.clientY);
+  updateGhost(e.clientX, e.clientY);
+  updateLiveOrder(e.clientX);
 }
 
-function updateDropTarget(x, y) {
+/** 进入拖拽：克隆一个跟手的 ghost，源项半透明留在原位（之后实时让位） */
+function beginDrag() {
+  const d = dragState;
+  d.moved = true;
+  hideTooltip();
+
+  const r = d.el.getBoundingClientRect();
+  const ghost = d.el.cloneNode(true);
+  ghost.className = d.el.className + " drag-ghost";
+  ghost.style.cssText =
+    "position:fixed;pointer-events:none;z-index:90;margin:0;" +
+    "left:" + r.left + "px;top:" + r.top + "px;" +
+    "width:" + r.width + "px;height:" + r.height + "px;";
+  document.body.appendChild(ghost);
+  d.ghost = ghost;
+
+  d.el.classList.add("drag-src");
+  document.body.classList.add("tray-dragging");
+}
+
+function updateGhost(x, y) {
+  const d = dragState;
+  if (!d || !d.ghost) return;
+  d.ghost.style.left = x - d.grabX + "px";
+  d.ghost.style.top = y - d.grabY + "px";
+}
+
+/**
+ * 实时让位：按指针 x 在所有图标中点之间找插入位置，直接 insertBefore。
+ * overflow 永远不被移动（它始终是最前/固定项），因此不会被插到前面。
+ */
+function updateLiveOrder(x) {
   const d = dragState;
   if (!d || !d.moved) return;
-  const hit = document.elementFromPoint ? document.elementFromPoint(x, y) : null;
-  const el = hit && hit.closest ? hit.closest(".tray-item") : null;
-  const valid = el && el !== d.el && el.dataset.kind === "icon" ? el : null;
-  if (d.targetEl === valid) return;
-  if (d.targetEl) d.targetEl.classList.remove("drop-target");
-  d.targetEl = valid;
-  if (valid) valid.classList.add("drop-target");
+  const icons = iconElements();
+  if (icons.length < 2) return;
+
+  // 找第一个中心 x 大于指针的图标作为插入参考
+  let ref = null;
+  for (const el of icons) {
+    if (el === d.el) continue;
+    const r = el.getBoundingClientRect();
+    if (x < r.left + r.width / 2) {
+      ref = el;
+      break;
+    }
+  }
+
+  if (ref) {
+    if (d.el.nextElementSibling !== ref) trayEl.insertBefore(d.el, ref);
+    return;
+  }
+
+  // 指针在所有图标右侧 → 放到最后一个图标之后（overflow 若在其后则插到它前面）
+  const others = icons.filter((el) => el !== d.el);
+  const last = others[others.length - 1];
+  if (!last) return;
+  const after = last.nextElementSibling;
+  if (after === d.el) return;
+  if (after) trayEl.insertBefore(d.el, after);
+  else trayEl.appendChild(d.el);
 }
 
 function onPointerUp(e) {
@@ -381,37 +442,19 @@ function onPointerUp(e) {
 
   if (!d.moved) {
     // 只是点击，没有拖动：清理状态，什么都不做（click 会正常转发）
-    resetDrag();
+    cleanupDrag();
     applyPending(); // 期间积攒的列表照常应用
     return;
   }
 
-  const targetEl = d.targetEl;
-  const sourceKey = d.key;
-  const targetKey = targetEl ? targetEl.dataset.key || "" : "";
-  let after = false;
-  if (targetEl) {
-    try {
-      const r = targetEl.getBoundingClientRect();
-      after = e.clientX >= r.left + r.width / 2;
-    } catch (err) {
-      after = false;
-    }
-  }
+  // 按 DOM 顺序收集 icon 的 orderKey（overflow 不在其中）
+  const domOrder = iconElements().map((el) => el.dataset.key || "").filter(Boolean);
 
-  resetDrag();
-
-  // 只要真的拖动过（无论有没有落在目标上），松手产生的 click 都要抑制一次，
-  // 否则拖到空白处松手会把托盘项当成被点击（弹出菜单/激活窗口）。
+  cleanupDrag();
+  // 只要真的拖动过，松手产生的 click 都要抑制一次，避免被当成托盘点击
   suppressClickUntil = Date.now() + CLICK_SUPPRESS_MS;
 
-  if (!targetKey) {
-    // 松手在空白处：不算排序
-    applyPending();
-    return;
-  }
-
-  const changed = reorderIcons(sourceKey, targetKey, after);
+  const changed = reorderItemsByKeys(domOrder);
   if (changed) {
     render();
     commitOrder();
@@ -421,18 +464,20 @@ function onPointerUp(e) {
 
 function onPointerCancel() {
   if (!dragState) return;
-  resetDrag();
+  const d = dragState;
+  cleanupDrag();
+  if (d.moved) render(); // 拖拽只动了 DOM，render 即恢复本地 items 的原顺序
   applyPending();
 }
 
 /** 清理拖拽的视觉/状态（不提交顺序） */
-function resetDrag() {
+function cleanupDrag() {
   const d = dragState;
   dragState = null;
   if (d) {
-    if (d.targetEl) d.targetEl.classList.remove("drop-target");
+    if (d.ghost && d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
     if (d.el) {
-      d.el.classList.remove("dragging");
+      d.el.classList.remove("drag-src");
       try {
         if (d.el.releasePointerCapture && d.pointerId !== undefined) {
           d.el.releasePointerCapture(d.pointerId);
@@ -454,11 +499,11 @@ function applyPending() {
 }
 
 /**
- * 把 sourceKey 的图标移动到 targetKey 前/后（仅 icon 之间）。
- * overflow 项保持它原来的“槽位”，不参与排序。
+ * 把本地 items 的 icon 顺序改成 keys（DOM 里的新顺序）。
+ * overflow 项保持它原来的槽位，不参与排序。
  */
-function reorderIcons(sourceKey, targetKey, after) {
-  if (!sourceKey || !targetKey || sourceKey === targetKey) return false;
+function reorderItemsByKeys(keys) {
+  if (!Array.isArray(keys) || !keys.length) return false;
 
   const iconSlots = [];
   const icons = [];
@@ -468,21 +513,20 @@ function reorderIcons(sourceKey, targetKey, after) {
       icons.push({ item: it, key: keyOf(it, i) });
     }
   });
+  if (icons.length !== keys.length) return false;
 
-  const from = icons.findIndex((x) => x.key === sourceKey);
-  const to = icons.findIndex((x) => x.key === targetKey);
-  if (from < 0 || to < 0) return false;
-
-  let insertAt = to + (after ? 1 : 0);
-  if (from < insertAt) insertAt -= 1;
-  if (insertAt === from) return false;
-
-  const moved = icons.splice(from, 1)[0];
-  icons.splice(insertAt, 0, moved);
+  const byKey = new Map(icons.map((x) => [x.key, x.item]));
+  const ordered = [];
+  for (const k of keys) {
+    const it = byKey.get(k);
+    if (!it) return false;
+    ordered.push(it);
+    byKey.delete(k);
+  }
 
   const next = items.slice();
-  let k = 0;
-  for (const slot of iconSlots) next[slot] = icons[k++].item;
+  let n = 0;
+  for (const slot of iconSlots) next[slot] = ordered[n++];
   items = next;
   return true;
 }

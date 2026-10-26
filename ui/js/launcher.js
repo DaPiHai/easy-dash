@@ -11,6 +11,8 @@ const LETTER_COLORS = ["#3584e4", "#e66100", "#2ec27e", "#9141ac", "#e01b24", "#
 
 /** 拖拽后抑制一次 click 的时长（毫秒），避免拖完松手把卡片当成一次启动 */
 const DRAG_CLICK_SUPPRESS_MS = 300;
+/** 拖拽判定阈值（像素）：超过才算拖动，否则按点击处理 */
+const APP_DRAG_THRESHOLD = 6;
 /** 自动滚动：边缘感应区 & 步长 */
 const AUTO_SCROLL_ZONE = 60;
 const AUTO_SCROLL_STEP = 18;
@@ -28,13 +30,10 @@ let errorTimer = null; // 启动失败提示
 let listening = false; // 事件监听是否已注册
 
 // ---------- 拖拽排序状态 ----------
-let dragAppId = null; // 正在拖拽的 app id（null = 没在拖）
-let dropTargetEl = null; // 当前指示的落点卡片
-let dropAfter = false; // 落点在目标卡片之后
+let dragState = null; // { el, id, pointerId, startX, startY, lastX, lastY, lastMoveAt, moved, ghost, grabX, grabY }
 let dragClickGuard = 0; // 拖拽结束后抑制 click 的截止时间
 let autoScrollTimer = null; // 边缘自动滚动定时器
 let autoScrollDir = 0; // -1 上 / 1 下 / 0 停
-let lastDragOverAt = 0; // 最近一次 dragover 时间（判断指针是否还在网格上）
 let pendingAppsReload = false; // 拖拽期间收到 apps-changed，结束后补一次刷新
 
 // ---------- 导入 / 右键菜单状态 ----------
@@ -101,11 +100,6 @@ function closeCenter() {
   }
 }
 
-function appById(id) {
-  const key = String(id);
-  return apps.find((a) => String(a.id) === key) || null;
-}
-
 // ---------- 渲染 ----------
 
 /** 按当前搜索词重算 filtered，并保留（可选）选中项的 id */
@@ -159,8 +153,6 @@ function renderStatus() {
 function cardHtml(app, index) {
   const name = String(app.name || "未命名应用");
   const id = String(app.id || "");
-  // 只有「没有搜索词」时才允许拖拽排序
-  const draggable = !query;
   let icon;
   if (app.icon) {
     icon = '<img src="' + escapeHtml(app.icon) + '" alt="">';
@@ -181,9 +173,7 @@ function cardHtml(app, index) {
   return (
     '<button class="' +
     cls +
-    '" type="button" draggable="' +
-    (draggable ? "true" : "false") +
-    '" data-i="' +
+    '" type="button" data-i="' +
     index +
     '" data-id="' +
     escapeHtml(id) +
@@ -355,6 +345,11 @@ function onKeyDown(e) {
   const key = e.key;
   if (key === "Escape") {
     e.preventDefault();
+    // 拖拽中按 Esc：取消拖拽并恢复原顺序
+    if (dragState) {
+      cancelAppDrag();
+      return;
+    }
     // 右键菜单开着时先关菜单，不关整个应用中心
     if (menuOpen) {
       hideAppMenu();
@@ -485,14 +480,7 @@ function onGridContextMenu(e) {
   showAppMenu(app, e.clientX, e.clientY);
 }
 
-// ---------- 拖拽排序（HTML5 DnD；仅在没有搜索词时可用） ----------
-
-function clearDropIndicator() {
-  if (dropTargetEl) {
-    dropTargetEl.classList.remove("drop-before", "drop-after");
-    dropTargetEl = null;
-  }
-}
+// ---------- 拖拽排序（pointer 事件 + Dock 同款位置预览；仅在没有搜索词时可用） ----------
 
 function startAutoScroll() {
   if (autoScrollTimer) return;
@@ -508,116 +496,173 @@ function stopAutoScroll() {
 }
 
 function tickAutoScroll() {
-  if (!dragAppId) {
+  const d = dragState;
+  if (!d || !d.moved) {
     stopAutoScroll();
     return;
   }
-  // 指针已经不在网格上（dragover 不再触发）→ 停止滚动
-  if (Date.now() - lastDragOverAt > 300) {
-    autoScrollDir = 0;
-    return;
-  }
+  // 方向由最近一次 pointermove 计算（指针停在边缘不动时也要持续滚动）
   if (!autoScrollDir) return;
+  const before = scrollEl.scrollTop;
   scrollEl.scrollTop += autoScrollDir * AUTO_SCROLL_STEP;
+  // 滚动后卡片位置变了，用最后的指针位置重新计算落点
+  if (scrollEl.scrollTop !== before) updateAppLiveOrder(d.lastX, d.lastY);
 }
 
-function maybeAutoScroll(e) {
+function maybeAutoScroll(y) {
   const r = scrollEl.getBoundingClientRect();
-  if (e.clientY < r.top + AUTO_SCROLL_ZONE) autoScrollDir = -1;
-  else if (e.clientY > r.bottom - AUTO_SCROLL_ZONE) autoScrollDir = 1;
+  if (y < r.top + AUTO_SCROLL_ZONE) autoScrollDir = -1;
+  else if (y > r.bottom - AUTO_SCROLL_ZONE) autoScrollDir = 1;
   else autoScrollDir = 0;
 }
 
-function onDragStart(e) {
-  // 搜索时禁用拖拽排序
-  if (query) {
-    e.preventDefault();
-    return;
-  }
+/** 按下卡片：记录起点；移动超过阈值才真正开始拖拽 */
+function onGridPointerDown(e) {
+  if (e.button !== 0) return; // 只处理左键
+  if (dragState) return;
+  if (query) return; // 搜索时禁用拖拽排序
   const card = e.target.closest ? e.target.closest(".ac-app") : null;
-  if (!card) return;
+  if (!card || !gridEl.contains(card)) return;
   const id = card.dataset.id || "";
-  if (!appById(id)) {
-    e.preventDefault();
-    return;
-  }
-  dragAppId = id;
-  lastDragOverAt = Date.now();
-  try {
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", id);
-  } catch (err) {
-    /* 某些环境 dataTransfer 只读，忽略 */
-  }
-  card.classList.add("dragging");
-  hideAppMenu();
-  startAutoScroll();
-}
+  if (!id) return;
+  if (filtered.length < 2) return; // 只有一张卡片时没有排序意义
 
-function onDragOver(e) {
-  if (!dragAppId) return;
-  e.preventDefault(); // 必须 preventDefault 才允许 drop
+  const r = card.getBoundingClientRect();
+  dragState = {
+    el: card,
+    id,
+    pointerId: e.pointerId,
+    startX: e.clientX,
+    startY: e.clientY,
+    lastX: e.clientX,
+    lastY: e.clientY,
+    moved: false,
+    ghost: null,
+    grabX: e.clientX - r.left,
+    grabY: e.clientY - r.top,
+  };
+  // 捕获指针：拖到网格外/窗口边缘也能继续收到 move/up
   try {
-    e.dataTransfer.dropEffect = "move";
+    if (card.setPointerCapture) card.setPointerCapture(e.pointerId);
   } catch (err) {
     /* 忽略 */
   }
-  lastDragOverAt = Date.now();
-  maybeAutoScroll(e);
+}
 
-  const card = e.target.closest ? e.target.closest(".ac-app") : null;
-  if (!card || card.dataset.id === dragAppId) {
-    clearDropIndicator();
+function onWindowPointerMove(e) {
+  const d = dragState;
+  if (!d) return;
+  d.lastX = e.clientX;
+  d.lastY = e.clientY;
+  if (!d.moved) {
+    if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < APP_DRAG_THRESHOLD) return;
+    beginAppDrag();
+  }
+  updateAppGhost(e.clientX, e.clientY);
+  maybeAutoScroll(e.clientY);
+  updateAppLiveOrder(e.clientX, e.clientY);
+}
+
+/** 进入拖拽：克隆一张跟手的 ghost，源卡片半透明留在实时让位后的位置 */
+function beginAppDrag() {
+  const d = dragState;
+  d.moved = true;
+  hideAppMenu();
+
+  const r = d.el.getBoundingClientRect();
+  const ghost = d.el.cloneNode(true);
+  ghost.className = d.el.className + " drag-ghost";
+  // 去掉与「选中/源项」相关的类：ghost 是浮起来的一张干净卡片
+  ghost.classList.remove("selected", "drag-src");
+  ghost.removeAttribute("id");
+  ghost.style.cssText =
+    "position:fixed;pointer-events:none;z-index:90;margin:0;" +
+    "left:" + r.left + "px;top:" + r.top + "px;" +
+    "width:" + r.width + "px;height:" + r.height + "px;";
+  document.body.appendChild(ghost);
+  d.ghost = ghost;
+
+  d.el.classList.add("drag-src");
+  document.body.classList.add("ac-dragging");
+  gridEl.classList.add("ac-dragging");
+  startAutoScroll();
+}
+
+function updateAppGhost(x, y) {
+  const d = dragState;
+  if (!d || !d.ghost) return;
+  d.ghost.style.left = x - d.grabX + "px";
+  d.ghost.style.top = y - d.grabY + "px";
+}
+
+/**
+ * 实时让位：按指针所在卡片决定插到它前面还是后面，直接 gridEl.insertBefore。
+ * 用矩形命中（而不是 elementFromPoint），避免源卡片自身挡住命中。
+ */
+function updateAppLiveOrder(x, y) {
+  const d = dragState;
+  if (!d || !d.moved) return;
+
+  const gridRect = gridEl.getBoundingClientRect();
+  // 指针在网格下方 → 移到末尾；在上方 → 移到开头
+  if (y > gridRect.bottom) {
+    if (gridEl.lastElementChild !== d.el) gridEl.appendChild(d.el);
     return;
   }
-  const rect = card.getBoundingClientRect();
+  if (y < gridRect.top) {
+    if (gridEl.firstElementChild !== d.el) gridEl.insertBefore(d.el, gridEl.firstElementChild);
+    return;
+  }
+
+  // 指针落在哪张卡片上（排除源自身）
+  let target = null;
+  for (const el of gridEl.children) {
+    if (el === d.el) continue;
+    const r = el.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+      target = el;
+      break;
+    }
+  }
+  if (!target) return; // 落在空白/间隙：保持当前位置
+
+  const rect = target.getBoundingClientRect();
   const midY = rect.top + rect.height / 2;
   const midX = rect.left + rect.width / 2;
   // 上下半区决定 before/after；同一水平带内再按左右中点判定
-  let after;
-  if (Math.abs(e.clientY - midY) > rect.height * 0.25) after = e.clientY > midY;
-  else after = e.clientX >= midX;
+  const after = Math.abs(y - midY) > rect.height * 0.25 ? y > midY : x >= midX;
 
-  if (dropTargetEl !== card) {
-    clearDropIndicator();
-    dropTargetEl = card;
+  if (after) {
+    if (target.nextElementSibling !== d.el) gridEl.insertBefore(d.el, target.nextElementSibling);
+  } else {
+    if (target.previousElementSibling !== d.el) gridEl.insertBefore(d.el, target);
   }
-  dropAfter = after;
-  card.classList.toggle("drop-before", !after);
-  card.classList.toggle("drop-after", after);
 }
 
-function onDrop(e) {
-  if (!dragAppId) return;
-  e.preventDefault();
+function onWindowPointerUp(e) {
+  const d = dragState;
+  if (!d) return;
 
-  const fromId = dragAppId;
-  const targetId = dropTargetEl ? dropTargetEl.dataset.id || "" : "";
-  const after = dropAfter;
+  if (!d.moved) {
+    // 只是点击：清理状态，click 会正常启动应用
+    cleanupAppDrag();
+    return;
+  }
+
+  // 松手：DOM 顺序就是最终顺序
+  const domIds = Array.from(gridEl.querySelectorAll(".ac-app")).map((el) => el.dataset.id || "");
   const prevSelected = filtered[selectedIndex];
+  const keepId = prevSelected ? prevSelected.id : null;
 
-  // 注意：drop 之后我们马上会 render，把被拖的卡片从 DOM 里换掉，
-  // 浏览器随后的 dragend 会发给已脱离文档的元素、不再冒泡到 gridEl，
-  // 所以清理与「抑制 click」必须在这里先做完（dragend 只兜取消场景）。
-  finishDrag(true);
+  const changed = applyDomOrderToApps(domIds);
+  cleanupAppDrag();
+  // 拖拽后抑制一次 click，避免松手被当成一次启动
+  dragClickGuard = Date.now() + DRAG_CLICK_SUPPRESS_MS;
 
-  if (!targetId || targetId === fromId) return;
-  const moved = moveApp(fromId, targetId, after);
-  if (!moved) return;
-
-  const keepId = prevSelected && prevSelected.id === fromId ? fromId : prevSelected ? prevSelected.id : null;
-  rebuildFiltered(keepId);
-  commitAppOrder();
-}
-
-/** 统一的拖拽收尾：清状态/指示/自动滚动，并抑制随后的那一次 click */
-function finishDrag(suppressClick) {
-  dragAppId = null;
-  clearDropIndicator();
-  stopAutoScroll();
-  const dragging = gridEl.querySelectorAll(".ac-app.dragging");
-  for (const el of dragging) el.classList.remove("dragging");
-  if (suppressClick) dragClickGuard = Date.now() + DRAG_CLICK_SUPPRESS_MS;
+  if (changed) {
+    renderPreservingScroll(keepId);
+    commitAppOrder();
+  }
   // 拖拽期间若有 apps-changed 被搁置，这里补一次刷新
   if (pendingAppsReload) {
     pendingAppsReload = false;
@@ -625,22 +670,72 @@ function finishDrag(suppressClick) {
   }
 }
 
-function onDragEnd() {
-  finishDrag(true);
+function onWindowPointerCancel() {
+  if (!dragState) return;
+  cancelAppDrag();
 }
 
-/** 在 apps 数组里把 fromId 移到 toId 前/后（只在无搜索词时调用） */
-function moveApp(fromId, toId, after) {
+/** 取消拖拽：apps 未被改动，render 即恢复原顺序 */
+function cancelAppDrag() {
+  const d = dragState;
+  if (!d) return;
+  const moved = d.moved;
+  cleanupAppDrag();
+  if (moved) render();
+  if (pendingAppsReload) {
+    pendingAppsReload = false;
+    loadApps({ silent: true });
+  }
+}
+
+/** 移除 ghost / 半透明源项 / 拖拽类，释放指针捕获（不提交顺序） */
+function cleanupAppDrag() {
+  const d = dragState;
+  dragState = null;
+  stopAutoScroll();
+  if (d) {
+    if (d.ghost && d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
+    if (d.el) {
+      d.el.classList.remove("drag-src");
+      try {
+        if (d.el.releasePointerCapture && d.pointerId !== undefined) {
+          d.el.releasePointerCapture(d.pointerId);
+        }
+      } catch (err) {
+        /* 指针已释放时忽略 */
+      }
+    }
+  }
+  document.body.classList.remove("ac-dragging");
+  gridEl.classList.remove("ac-dragging");
+}
+
+/**
+ * 用 DOM 顺序回写 apps（无搜索词时 filtered 与 apps 同序）。
+ * 返回是否成功；数据不一致时不动，避免把列表写坏。
+ */
+function applyDomOrderToApps(domIds) {
   if (query) return false;
-  const from = apps.findIndex((a) => String(a.id) === String(fromId));
-  const to = apps.findIndex((a) => String(a.id) === String(toId));
-  if (from < 0 || to < 0 || from === to) return false;
-  let insertAt = to + (after ? 1 : 0);
-  if (from < insertAt) insertAt -= 1;
-  if (insertAt === from) return false;
-  const moved = apps.splice(from, 1)[0];
-  apps.splice(insertAt, 0, moved);
+  if (!apps.length || domIds.length !== apps.length) return false;
+  const byId = new Map(apps.map((a) => [String(a.id), a]));
+  const seen = new Set();
+  const next = [];
+  for (const id of domIds) {
+    const key = String(id);
+    const app = byId.get(key);
+    if (!app || seen.has(key)) return false;
+    seen.add(key);
+    next.push(app);
+  }
+  apps = next;
   return true;
+}
+
+/** 重建列表但保持滚动位置与选中项 */
+function renderPreservingScroll(keepId) {
+  const top = scrollEl.scrollTop;
+  rebuildFiltered(keepId);
+  scrollEl.scrollTop = top;
 }
 
 /** 提交新的应用顺序（后端会存盘并重排缓存） */
@@ -670,10 +765,8 @@ function shouldSuppressClick() {
 /** 每次打开应用中心：重置搜索/选中、聚焦输入框、滚动到顶 */
 function onOpen() {
   launching = false;
-  dragAppId = null;
+  cancelAppDrag(); // 上次若残留拖拽状态，清掉并恢复顺序
   pendingAppsReload = false;
-  stopAutoScroll();
-  clearDropIndicator();
   hideAppMenu();
   hideLaunchError();
   searchEl.value = "";
@@ -688,8 +781,8 @@ function onOpen() {
 /** 后端枚举完成：恢复刷新按钮并保持当前搜索词重绘 */
 function onAppsChanged() {
   finishRefresh();
-  // 拖拽中不要重绘，否则会打断拖拽；结束后补一次
-  if (dragAppId) {
+  // 拖拽中不要重绘，否则 ghost 会丢；结束后补一次
+  if (dragState) {
     pendingAppsReload = true;
     return;
   }
@@ -716,11 +809,15 @@ function bindEvents() {
   gridEl.addEventListener("contextmenu", onGridContextMenu);
   if (menuEl) menuEl.addEventListener("click", onMenuClick);
 
-  // 拖拽排序
-  gridEl.addEventListener("dragstart", onDragStart);
-  gridEl.addEventListener("dragover", onDragOver);
-  gridEl.addEventListener("drop", onDrop);
-  gridEl.addEventListener("dragend", onDragEnd);
+  // 拖拽排序（pointer 事件 + Dock 同款位置预览；HTML5 DnD 在物理鼠标下很难触发）
+  gridEl.addEventListener("pointerdown", onGridPointerDown);
+  window.addEventListener("pointermove", onWindowPointerMove);
+  window.addEventListener("pointerup", onWindowPointerUp);
+  window.addEventListener("pointercancel", onWindowPointerCancel);
+  // 窗口失焦时取消拖拽（应用中心本身不因失焦关闭）
+  window.addEventListener("blur", () => {
+    if (dragState) cancelAppDrag();
+  });
 
   // 失败态里的「重试」
   statusEl.addEventListener("click", (e) => {

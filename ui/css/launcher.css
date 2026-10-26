@@ -217,36 +217,35 @@ button:focus {
   transition: background 0.12s ease, outline-color 0.12s ease;
 }
 
-/* 可拖拽（没有搜索词）时给抓手光标 */
-.ac-app[draggable="true"] {
-  cursor: grab;
+/* 卡片统一禁止原生拖拽（排序用 pointer 事件自绘 ghost） */
+.ac-app {
+  -webkit-user-drag: none;
 }
 
-.ac-app.dragging {
-  opacity: 0.45;
-  cursor: grabbing;
-}
-
-/* 拖拽落点指示：目标卡片左右侧一条 accent 竖线 */
-.ac-app.drop-before::after,
-.ac-app.drop-after::after {
-  content: "";
-  position: absolute;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--accent);
-  box-shadow: 0 0 8px rgba(53, 132, 228, 0.75);
+/* 被拖动的源卡片：半透明留在实时让位后的位置 */
+.ac-app.drag-src {
+  opacity: 0.3;
   pointer-events: none;
 }
 
-.ac-app.drop-before::after {
-  left: -2px;
+/* 跟手的克隆体（定位由 JS 的 style 提供；Dock 同款：浮起 + 阴影，不带不透明底） */
+.ac-app.drag-ghost {
+  opacity: 0.95;
+  transform: scale(1.05);
+  border-radius: 12px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.6));
+  pointer-events: none;
 }
 
-.ac-app.drop-after::after {
-  right: -2px;
+/* 拖拽期间：手型光标 + 禁止选中 */
+body.ac-dragging,
+body.ac-dragging * {
+  cursor: grabbing !important;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* 导入应用角标 */

@@ -186,19 +186,26 @@ body.panel-open .topbar {
   pointer-events: none;
 }
 
-/* ---- 托盘拖拽排序（pointer 事件，窗口只有 32px 高） ---- */
+/* ---- 托盘拖拽排序（pointer 事件，窗口只有 32px 高；Dock 同款位置预览） ---- */
 
 .tray-item[data-kind="icon"] {
   cursor: grab;
 }
 
-.tray-item.dragging {
-  opacity: 0.45;
-  cursor: grabbing;
+/* 被拖动的源项：半透明留在实时让位后的位置 */
+.tray-item.drag-src {
+  opacity: 0.3;
+  pointer-events: none;
 }
 
-.tray-item.drop-target {
-  background: rgba(255, 255, 255, 0.3);
+/* 跟手的克隆体（定位由 JS 的 style 提供） */
+.tray-item.drag-ghost {
+  opacity: 0.95;
+  transform: scale(1.15);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
 }
 
 /* 拖拽期间：手型光标 + 禁止选中文字/图标 */
