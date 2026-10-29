@@ -1,3 +1,7 @@
+import "./theme.js";
+import "./cursor-glow.js";
+import "./glass.js";
+import { beginSurfaceOpen } from "./surface-open.js";
 import { invoke, listen, escapeHtml } from "./api.js";
 
 const gridEl = document.getElementById("grid");
@@ -19,7 +23,8 @@ function render(items) {
   items.forEach((item, i) => {
     const card = document.createElement("div");
     card.className = "card";
-    card.style.animationDelay = `${Math.min(i, 12) * 35}ms`;
+    // 打开动画的错峰延迟（与 motion.css §11 的 24ms / 上限 10 一致）
+    card.style.animationDelay = `${Math.min(i, 10) * 24}ms`;
 
     const thumb = item.image
       ? `<img class="thumb" src="${item.image}" alt="">`
@@ -44,7 +49,11 @@ function render(items) {
   });
 }
 
-listen("overview-data", (e) => render(e.payload || []));
+listen("overview-data", (e) => {
+  // 先落到关闭态（遮罩 opacity 0），玻璃就绪后由 surface-open.js 播入场
+  beginSurfaceOpen();
+  render(e.payload || []);
+});
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") invoke("close_overview").catch(() => {});

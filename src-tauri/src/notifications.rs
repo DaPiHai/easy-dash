@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::app_state::AppState;
 use crate::notify_db;
-use crate::types::NotificationItem;
+use crate::types::{AppEntry, NotificationItem};
 use crate::winapi;
 
 /// 一次刷新最多读取/展示的条数
@@ -63,7 +63,7 @@ fn refresh(
     icon_cache: &mut HashMap<String, Option<String>>,
     name_cache: &mut HashMap<String, String>,
 ) {
-    let items = match build_items(icon_cache, name_cache) {
+    let mut items = match build_items(icon_cache, name_cache) {
         Ok(items) => items,
         Err(e) => {
             // 读库失败（系统锁库 / 无权限 / 无历史）不该打断工作线程
@@ -71,6 +71,8 @@ fn refresh(
             return;
         }
     };
+    // 二级兜底：处理器标识解析不出启动目标时，按本地化应用名匹配开始菜单缓存
+    fill_launch_fallbacks(app, &mut items);
     // 写缓存：锁中毒时本轮放弃，不上报半截数据
     {
         let state = app.state::<AppState>();
@@ -90,6 +92,8 @@ fn build_items(
 ) -> Result<Vec<NotificationItem>, String> {
     let (raw, handlers) = notify_db::load_recent(MAX_ITEMS)?;
     let mut items: Vec<NotificationItem> = Vec::with_capacity(raw.len());
+    // 同一处理器只解析一次启动目标（AppsFolder 存在性校验需要 Shell 调用）
+    let mut launch_cache: HashMap<String, Option<String>> = HashMap::new();
     for r in &raw {
         // 没有文本内容的通知（纯进度条 / 媒体控制 / 纯图片）跳过
         let (title, body) = match extract_toast_text(&r.payload) {
@@ -112,11 +116,17 @@ fn build_items(
                 key.to_string()
             }
         };
+        // 启动目标：解析失败保持 None（前端据此隐藏「打开应用」入口）
+        let launch = launch_cache
+            .entry(app_key.clone())
+            .or_insert_with(|| winapi::app_launch::target_for(primary_id, handler_type))
+            .clone();
         items.push(NotificationItem {
             id: r.id,
             app_key,
             app_name,
             app_icon,
+            launch,
             title,
             body,
             ts_ms: fil_time_to_unix_ms(r.arrival_ft),
@@ -125,6 +135,40 @@ fn build_items(
     // 库内已按到达时间倒序；这里再排一次，保证前端展示顺序稳定
     items.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
     Ok(items)
+}
+
+/// 二级兜底：处理器标识解析不出启动目标时，用本地化应用名匹配开始菜单缓存。
+///
+/// 通知库里的桌面应用处理器经常只是一个裸名称（如 "QQ"），`app_icons` 的注册表
+/// 匹配也会漏掉没在通知区域注册图标的应用；开始菜单缓存里通常有同名条目。
+fn fill_launch_fallbacks(app: &AppHandle, items: &mut [NotificationItem]) {
+    if !items.iter().any(|it| it.launch.is_none()) {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let apps = match state.apps.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
+    for it in items.iter_mut() {
+        if it.launch.is_none() {
+            it.launch = matching_launch(&apps, &it.app_name);
+        }
+    }
+}
+
+/// 按显示名（trim + 忽略大小写）匹配开始菜单/打包应用缓存（纯函数，便于单测）。
+///
+/// 只接受完整同名的条目；「系统」占位名不参与匹配，避免误开其它应用。
+pub fn matching_launch(apps: &[AppEntry], app_name: &str) -> Option<String> {
+    let want = app_name.trim().to_lowercase();
+    if want.is_empty() || want == "系统" {
+        return None;
+    }
+    apps.iter()
+        .find(|a| a.name.trim().to_lowercase() == want)
+        .map(|a| a.launch.clone())
+        .filter(|launch| !launch.trim().is_empty())
 }
 
 /// 解析条目的应用显示名与图标：命中缓存就不再做 Shell / 包清单 / 别名表查询。
@@ -425,6 +469,49 @@ fn pump_messages() {
 mod tests {
     use super::*;
 
+    // ==================== 应用名 → 开始菜单启动目标 ====================
+
+    fn app_entry(name: &str, launch: &str) -> AppEntry {
+        AppEntry {
+            id: format!("lnk:{}", name.to_lowercase()),
+            name: name.into(),
+            icon: None,
+            launch: launch.into(),
+            args: String::new(),
+            kind: "classic".into(),
+        }
+    }
+
+    #[test]
+    fn matching_launch_prefers_exact_trimmed_name() {
+        let apps = vec![
+            app_entry("QQ", r"C:\Program Files\Tencent\QQNT\QQ.exe"),
+            app_entry("微信", r"C:\Program Files\Tencent\Weixin\Weixin.exe"),
+        ];
+        assert_eq!(
+            matching_launch(&apps, " QQ ").as_deref(),
+            Some(r"C:\Program Files\Tencent\QQNT\QQ.exe")
+        );
+        assert_eq!(matching_launch(&apps, "qq").as_deref(), Some(r"C:\Program Files\Tencent\QQNT\QQ.exe"));
+        assert_eq!(
+            matching_launch(&apps, "微信").as_deref(),
+            Some(r"C:\Program Files\Tencent\Weixin\Weixin.exe")
+        );
+    }
+
+    #[test]
+    fn matching_launch_ignores_missing_and_system() {
+        let apps = vec![app_entry("QQ", r"C:\QQ.exe")];
+        // 「系统」是未识别处理器的占位名，不允许匹配到真实应用
+        assert_eq!(matching_launch(&apps, "系统"), None);
+        assert_eq!(matching_launch(&apps, ""), None);
+        assert_eq!(matching_launch(&apps, "   "), None);
+        assert_eq!(matching_launch(&apps, "不存在的应用"), None);
+        // 条目 launch 为空时也不能生成入口
+        let empty = vec![app_entry("QQ", "  ")];
+        assert_eq!(matching_launch(&empty, "QQ"), None);
+    }
+
     // ==================== FILETIME → Unix 毫秒 ====================
 
     #[test]
@@ -635,11 +722,12 @@ mod tests {
         eprintln!("[smoke] notification items={}", items.len());
         for it in items.iter().take(8) {
             eprintln!(
-                "[smoke] id={} app_key={:?} app_name={:?} icon_len={} title={:?}",
+                "[smoke] id={} app_key={:?} app_name={:?} icon_len={} launch={:?} title={:?}",
                 it.id,
                 it.app_key,
                 it.app_name,
                 it.app_icon.as_ref().map(|u| u.len()).unwrap_or(0),
+                it.launch,
                 it.title
             );
         }

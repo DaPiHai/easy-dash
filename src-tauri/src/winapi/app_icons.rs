@@ -169,6 +169,11 @@ fn assign_order_keys(items: &mut [TrayItem]) {
     assign_order_keys_with(items, entries());
 }
 
+/// 供托盘代理复用：只按名称/注册表计算稳定 order_key，不改图标。
+pub(crate) fn assign_order_keys_for_proxy(items: &mut [TrayItem]) {
+    assign_order_keys(items);
+}
+
 /// `assign_order_keys` 的可注入条目版本（单测用，避免依赖本机注册表）
 fn assign_order_keys_with(items: &mut [TrayItem], entries: &[NotifyEntry]) {
     let bases: Vec<Option<String>> = items
@@ -408,6 +413,29 @@ pub fn resolve_identity(primary_id: &str) -> Option<AppIdentity> {
         name: id.to_string(),
         icon: None,
     })
+}
+
+/// 把通知处理器标识解析为可直接启动的 exe/lnk 路径（只做解析，不启动应用）。
+///
+/// 只有「路径形态」或能按名称命中通知区域注册表条目的标识才会返回；
+/// 纯 AUMID / GUID / 系统标识返回 None，由 `winapi::app_launch` 决定是否走
+/// `shell:AppsFolder\<AUMID>`。
+pub fn launch_path(primary_id: &str) -> Option<String> {
+    let id = primary_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let candidate = if id.contains('\\') || id.contains('/') || id.to_lowercase().ends_with(".exe") {
+        expand_known_folder(id).unwrap_or_else(|| id.to_string())
+    } else {
+        // 只有名字（如 "QQ"）：按注册表通知区域条目匹配出 exe 路径
+        best_match(id, entries())?.exe_path.clone()?
+    };
+    if std::path::Path::new(&candidate).is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 /// 命中注册表条目后的展示名优先级：
@@ -1028,6 +1056,19 @@ mod tests {
         assert!(t.iter().any(|x| x == "douyin"));
         // 无关名字不应产生别名 token
         assert!(alias_tokens(&normalize("任务栏输入指示")).is_empty());
+    }
+
+    #[test]
+    fn launch_path_requires_existing_file() {
+        // 真实存在的系统 exe：路径形态直接返回
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let notepad = format!(r"{root}\System32\notepad.exe");
+        assert_eq!(launch_path(&notepad).as_deref(), Some(notepad.as_str()));
+        // 不存在的路径 / 空标识不产生启动目标
+        assert_eq!(launch_path(r"C:\__easy_dash_no_such_file__.exe"), None);
+        assert_eq!(launch_path("   "), None);
+        // 纯 AUMID（含 !）不是路径，也不该在注册表里误匹配
+        assert_eq!(launch_path("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"), None);
     }
 
     #[test]

@@ -50,8 +50,12 @@ pub fn spawn(app: AppHandle) {
                 // 枚举失败：保留旧缓存（前端显示降级提示），只翻转可用标志
                 st.tray_available.store(available, Ordering::Relaxed);
             }
-            // 无论成功失败都通知前端重绘
-            let _ = app.emit("tray-changed", &items);
+            // 无论成功失败都通知前端重绘。
+            // UIA 回退只镜像主屏任务栏，因此只发给主屏顶栏；副屏顶栏保持空托盘，
+            // 避免把副屏点击映射到主屏任务栏托盘（代理模式则发给所有顶栏）。
+            if let Some(primary) = crate::surfaces::primary_topbar_window(&app) {
+                let _ = app.emit_to(primary.label(), "tray-changed", &items);
+            }
         }
     });
 }

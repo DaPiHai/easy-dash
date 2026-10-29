@@ -1,54 +1,32 @@
 // 通知中心右栏媒体卡：Windows SMTC 当前媒体会话。
-// 封面 / 标题 / 歌手 / 进度条 + 上一首·播放暂停·下一首。
+// 64px 封面 + 页内模糊封面底 + 标题/歌手 + 进度条 + 圆形控制键。
 // 面板打开时 start()（立即拉一次 + 每 2s 轮询），关闭时 stop()。
+// 样式前缀 med-（见 ui/css/panels.css）。
 import { invoke, invokeRetry } from "./api.js";
+import { icon } from "./icons.js";
 
 /** 轮询间隔（毫秒） */
 const POLL_MS = 2000;
 
-function svg(inner, size) {
-  const s = size || 16;
-  return (
-    '<svg width="' +
-    s +
-    '" height="' +
-    s +
-    '" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-    inner +
-    "</svg>"
-  );
-}
-
-const ICONS = {
-  prev: svg('<path d="M19 20 9 12l10-8v16Z" fill="currentColor" stroke="none"/><path d="M5 19V5"/>'),
-  next: svg('<path d="m5 4 10 8-10 8V4Z" fill="currentColor" stroke="none"/><path d="M19 5v14"/>'),
-  play: svg('<path d="m7 4 13 8-13 8V4Z" fill="currentColor" stroke="none"/>'),
-  pause: svg('<path d="M8 4h4v16H8z" fill="currentColor" stroke="none"/><path d="M16 4h4v16h-4z" fill="currentColor" stroke="none"/>'),
-  note: svg(
-    '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
-    22
-  ),
-};
-
 const CARD_HTML = `
-  <div class="mc">
-    <div class="mc-error hidden" id="mc-error"></div>
-    <div class="mc-top">
-      <div class="mc-cover" id="mc-cover"></div>
-      <div class="mc-meta">
-        <div class="mc-title" id="mc-title">无媒体播放</div>
-        <div class="mc-artist" id="mc-artist"></div>
+  <div class="med">
+    <div class="med-bg" id="med-bg"></div>
+    <div class="med-error hidden" id="med-error"></div>
+    <div class="med-top">
+      <div class="med-cover empty" id="med-cover">${icon("music", { size: 24 })}</div>
+      <div class="med-meta">
+        <div class="med-title" id="med-title">无媒体播放</div>
+        <div class="med-artist" id="med-artist"></div>
       </div>
     </div>
-    <div class="mc-progress hidden" id="mc-progress">
-      <div class="mc-bar"><div class="mc-bar-fill" id="mc-fill"></div></div>
-      <div class="mc-times"><span id="mc-pos">0:00</span><span id="mc-dur">0:00</span></div>
+    <div class="med-progress hidden" id="med-progress">
+      <div class="med-bar"><div class="med-bar-fill" id="med-fill"></div></div>
+      <div class="med-times"><span id="med-pos">0:00</span><span id="med-dur">0:00</span></div>
     </div>
-    <div class="mc-controls hidden" id="mc-controls">
-      <button class="mc-btn" id="mc-prev" type="button" title="上一首"></button>
-      <button class="mc-btn mc-btn-main" id="mc-toggle" type="button" title="播放/暂停"></button>
-      <button class="mc-btn" id="mc-next" type="button" title="下一首"></button>
+    <div class="med-controls hidden" id="med-controls">
+      <button class="med-btn" id="med-prev" type="button" title="上一首"></button>
+      <button class="med-btn med-btn-main" id="med-toggle" type="button" title="播放/暂停"></button>
+      <button class="med-btn" id="med-next" type="button" title="下一首"></button>
     </div>
   </div>
 `;
@@ -63,7 +41,7 @@ function errText(e) {
   }
 }
 
-/** 毫秒 → m:ss（未知返回 "--:--"） */
+/** 毫秒 → m:ss（未知返回 "0:00"） */
 function fmtTime(ms) {
   const n = Number(ms);
   if (!Number.isFinite(n) || n <= 0) return "0:00";
@@ -85,18 +63,19 @@ export function createMediaCard(container) {
   container.innerHTML = CARD_HTML;
 
   // 引用必须等 innerHTML 落地后再取
-  const coverEl = document.getElementById("mc-cover");
-  const titleEl = document.getElementById("mc-title");
-  const artistEl = document.getElementById("mc-artist");
-  const progressEl = document.getElementById("mc-progress");
-  const fillEl = document.getElementById("mc-fill");
-  const posEl = document.getElementById("mc-pos");
-  const durEl = document.getElementById("mc-dur");
-  const controlsEl = document.getElementById("mc-controls");
-  const prevBtn = document.getElementById("mc-prev");
-  const toggleBtn = document.getElementById("mc-toggle");
-  const nextBtn = document.getElementById("mc-next");
-  const errorEl = document.getElementById("mc-error");
+  const bgEl = document.getElementById("med-bg");
+  const coverEl = document.getElementById("med-cover");
+  const titleEl = document.getElementById("med-title");
+  const artistEl = document.getElementById("med-artist");
+  const progressEl = document.getElementById("med-progress");
+  const fillEl = document.getElementById("med-fill");
+  const posEl = document.getElementById("med-pos");
+  const durEl = document.getElementById("med-dur");
+  const controlsEl = document.getElementById("med-controls");
+  const prevBtn = document.getElementById("med-prev");
+  const toggleBtn = document.getElementById("med-toggle");
+  const nextBtn = document.getElementById("med-next");
+  const errorEl = document.getElementById("med-error");
 
   let started = false;
   let timer = null;
@@ -105,9 +84,9 @@ export function createMediaCard(container) {
   let lastCover = ""; // 上次渲染的封面（同一 data URL 不重复重建 <img>）
 
   // 静态图标
-  if (prevBtn) prevBtn.innerHTML = ICONS.prev;
-  if (nextBtn) nextBtn.innerHTML = ICONS.next;
-  if (toggleBtn) toggleBtn.innerHTML = ICONS.play;
+  if (prevBtn) prevBtn.innerHTML = icon("skipBack", { size: 15 });
+  if (nextBtn) nextBtn.innerHTML = icon("skipForward", { size: 15 });
+  if (toggleBtn) toggleBtn.innerHTML = icon("play", { size: 16 });
 
   bindButtons();
 
@@ -134,40 +113,53 @@ export function createMediaCard(container) {
     }
   }
 
+  /** 模糊封面底：无封面时清空（空态保持纯色卡） */
+  function setBackdrop(thumb) {
+    if (!bgEl) return;
+    if (thumb) {
+      if (thumb === lastCover && bgEl.classList.contains("on")) return;
+      bgEl.style.backgroundImage = 'url("' + thumb.replace(/["\\]/g, "") + '")';
+      bgEl.classList.add("on");
+    } else if (bgEl.classList.contains("on")) {
+      bgEl.style.backgroundImage = "";
+      bgEl.classList.remove("on");
+    }
+  }
+
+  function setCover(thumb) {
+    if (!coverEl) return;
+    if (thumb) {
+      if (thumb === lastCover) return;
+      lastCover = thumb;
+      coverEl.classList.remove("empty");
+      coverEl.innerHTML = '<img src="' + thumb.replace(/"/g, "&quot;") + '" alt="">';
+    } else if (lastCover !== "__empty__") {
+      lastCover = "__empty__";
+      coverEl.classList.add("empty");
+      coverEl.innerHTML = icon("music", { size: 24 });
+    }
+  }
+
   function render(s) {
     const info = s && typeof s === "object" ? s : null;
     const playing = !!(info && info.playing);
 
     if (!info) {
       // 无会话
-      if (coverEl && lastCover !== "__empty__") {
-        lastCover = "__empty__";
-        coverEl.innerHTML = '<span class="mc-note">' + ICONS.note + "</span>";
-        coverEl.classList.add("empty");
-      }
+      setBackdrop("");
+      setCover("");
       if (titleEl) titleEl.textContent = "无媒体播放";
       if (artistEl) artistEl.textContent = "";
       if (progressEl) progressEl.classList.add("hidden");
       if (controlsEl) controlsEl.classList.add("hidden");
-      if (toggleBtn) toggleBtn.innerHTML = ICONS.play;
+      if (toggleBtn) toggleBtn.innerHTML = icon("play", { size: 16 });
       return;
     }
 
-    // 封面（同一 data URL 不重复重建 <img>，避免每 2s 闪烁）
-    if (coverEl) {
-      const thumb = info.thumbnail ? String(info.thumbnail) : "";
-      if (thumb) {
-        if (thumb !== lastCover) {
-          lastCover = thumb;
-          coverEl.classList.remove("empty");
-          coverEl.innerHTML = '<img src="' + thumb.replace(/"/g, "&quot;") + '" alt="">';
-        }
-      } else if (lastCover !== "__empty__") {
-        lastCover = "__empty__";
-        coverEl.classList.add("empty");
-        coverEl.innerHTML = '<span class="mc-note">' + ICONS.note + "</span>";
-      }
-    }
+    // 封面 + 模糊底（同一 data URL 不重复重建 <img>，避免每 2s 闪烁）
+    const thumb = info.thumbnail ? String(info.thumbnail) : "";
+    setBackdrop(thumb);
+    setCover(thumb);
     if (titleEl) titleEl.textContent = info.title || "未知曲目";
     const sub = [info.artist, info.album].filter((x) => x && String(x).trim()).join(" · ");
     if (artistEl) artistEl.textContent = sub || info.sourceApp || "";
@@ -188,8 +180,10 @@ export function createMediaCard(container) {
     }
 
     if (controlsEl) controlsEl.classList.remove("hidden");
-    if (toggleBtn) toggleBtn.innerHTML = playing ? ICONS.pause : ICONS.play;
-    if (toggleBtn) toggleBtn.title = playing ? "暂停" : "播放";
+    if (toggleBtn) {
+      toggleBtn.innerHTML = icon(playing ? "pause" : "play", { size: 16 });
+      toggleBtn.title = playing ? "暂停" : "播放";
+    }
   }
 
   // ---------- 数据 ----------
@@ -217,14 +211,14 @@ export function createMediaCard(container) {
     // 播放/暂停先乐观切换图标
     if (action === "toggle" && toggleBtn) {
       const playing = !!(state && state.playing);
-      toggleBtn.innerHTML = playing ? ICONS.play : ICONS.pause;
+      toggleBtn.innerHTML = icon(playing ? "play" : "pause", { size: 16 });
     }
     try {
       const playing = await invoke("media_action", { action });
       // 后端返回动作后的播放状态（true=在播放）
       if (typeof playing === "boolean") {
         if (state) state.playing = playing;
-        if (toggleBtn) toggleBtn.innerHTML = playing ? ICONS.pause : ICONS.play;
+        if (toggleBtn) toggleBtn.innerHTML = icon(playing ? "pause" : "play", { size: 16 });
       }
     } catch (e) {
       showError("媒体控制失败: " + errText(e));

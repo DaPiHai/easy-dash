@@ -1,8 +1,9 @@
 /* ============================================================
-   应用中心（全屏应用网格，GNOME 暗色风）
+   应用中心（全屏应用网格 + 分页，GNOME 风格 · 双主题）
    背景由 #backdrop 铺满整屏并压暗桌面；内容列最大 1180px 居中。
    注意：顶栏（32px）与 Dock 由后端重新置于 topmost，所以上下留出内边距，
    避免网格/提示被它们遮住。
+   颜色/阴影/圆角/动效全部来自 shared.css 的主题 tokens（深/浅两套）。
    ============================================================ */
 
 html,
@@ -14,9 +15,7 @@ body {
   background: transparent;
 }
 
-button:focus {
-  outline: none;
-}
+/* 焦点环由 shared.css 的 :focus-visible 统一提供（键盘可达，鼠标点击不出现） */
 
 /* ==================== 全屏背景 ==================== */
 
@@ -26,8 +25,8 @@ button:focus {
   display: flex;
   align-items: stretch;
   justify-content: center;
-  padding: 54px 64px 96px; /* 顶部避开 32px 顶栏，底部避开 Dock */
-  background: rgba(12, 12, 14, 0.88);
+  padding: 56px 64px 96px; /* 顶部避开 32px 顶栏（+24 留白），底部避开 Dock；4px 网格 */
+  background: var(--scrim, rgba(12, 12, 14, 0.88));
 }
 
 #ac-panel {
@@ -36,7 +35,7 @@ button:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-4, 12px);
 }
 
 /* ==================== 搜索行 ==================== */
@@ -45,20 +44,20 @@ button:focus {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 46px;
-  padding: 0 8px 0 14px;
-  border-radius: 14px;
-  background: rgba(36, 36, 40, 0.9);
-  border: 1px solid var(--panel-border);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  gap: var(--space-3, 8px);
+  height: 48px;
+  padding: 0 var(--space-3, 8px) 0 var(--space-4, 12px);
+  border-radius: var(--radius-lg, 14px);
+  background: var(--surface-2, rgba(36, 36, 40, 0.9));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  box-shadow: var(--shadow-panel, 0 8px 24px rgba(0, 0, 0, 0.35));
 }
 
 .ac-search-icon {
   flex: none;
   display: flex;
   align-items: center;
-  color: var(--text-dim);
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
 }
 
 #ac-search {
@@ -69,48 +68,54 @@ button:focus {
   border: none;
   outline: none;
   background: transparent;
-  color: var(--text);
+  color: var(--text, #f2f3f5);
   font-family: inherit;
   font-size: 15px;
-  caret-color: var(--accent);
+  caret-color: var(--accent, #3584e4);
 }
 
 #ac-search::placeholder {
-  color: rgba(255, 255, 255, 0.4);
+  /* 占位符按 §6 达到 ≥3:1（--text-faint 在浅色下仅 2.6:1）；仍明显弱于已输入文字 */
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
 }
 
 .ac-count {
   flex: none;
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.ac-refresh {
+/* 刷新 / 导入按钮（同款胶囊） */
+.ac-refresh,
+.ac-import {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
+  gap: var(--space-3, 8px);
+  height: 32px;
+  padding: 0 var(--space-3, 12px);
+  border-radius: var(--radius-md, 10px);
+  background: var(--hover, rgba(255, 255, 255, 0.08));
+  color: var(--text, #f2f3f5);
   font-size: 12px;
   white-space: nowrap;
-  transition: background 0.15s ease;
+  transition: background var(--dur-fast, 120ms) var(--ease, ease);
 }
 
-.ac-refresh:hover {
-  background: rgba(255, 255, 255, 0.16);
+.ac-refresh:hover,
+.ac-import:hover {
+  background: var(--hover-strong, rgba(255, 255, 255, 0.16));
 }
 
-.ac-refresh:disabled {
+.ac-refresh:disabled,
+.ac-import:disabled {
   opacity: 0.55;
 }
 
-.ac-refresh-icon {
+.ac-refresh-icon,
+.ac-import-icon {
   display: flex;
   align-items: center;
 }
@@ -126,75 +131,64 @@ button:focus {
   }
 }
 
-/* 导入按钮（与刷新按钮同款） */
-.ac-import {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
-  font-size: 12px;
-  white-space: nowrap;
-  transition: background 0.15s ease;
-}
-
-.ac-import:hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.ac-import:disabled {
-  opacity: 0.55;
-}
-
-.ac-import-icon {
-  display: flex;
-  align-items: center;
-}
-
-/* ==================== 应用网格 ==================== */
+/* ==================== 分页网格（无纵向滚动） ==================== */
 
 .ac-scroll {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden; /* 分页后不再纵向滚动 */
   overscroll-behavior: contain;
-  padding: 4px 6px 8px;
-  scrollbar-width: thin;
-}
-
-.ac-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-
-.ac-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.ac-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 4px;
-}
-
-.ac-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28);
+  padding: 0;
 }
 
 .ac-grid {
   flex: 0 0 auto;
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 10px 8px;
-  max-width: 1180px;
-  margin: 0 auto;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 8px; /* 与 launcher.js 的 PAGE_ROW_GAP 一致 */
+  grid-auto-rows: 104px; /* 与 launcher.js 的 PAGE_ROW_HEIGHT 一致 */
   align-content: start;
+}
+
+/* 翻页动画：新页从翻页方向滑入 + 淡入（prefers-reduced-motion 时关闭） */
+@keyframes ac-page-next {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes ac-page-prev {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.ac-grid.page-next {
+  animation: ac-page-next 180ms var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1)) both;
+}
+
+.ac-grid.page-prev {
+  animation: ac-page-prev 180ms var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1)) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-grid.page-next,
+  .ac-grid.page-prev {
+    animation: none;
+  }
 }
 
 /* ==================== 应用卡片 ==================== */
@@ -204,17 +198,20 @@ button:focus {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 12px 6px 10px;
+  justify-content: flex-start;
+  gap: var(--space-1, 4px);
+  padding: var(--space-3, 8px);
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: var(--radius-lg, 14px);
   background: transparent;
-  color: var(--text);
+  color: var(--text, #f2f3f5);
   text-align: center;
   /* 键盘导航选中态用 outline，不影响布局 */
   outline: 2px solid transparent;
   outline-offset: -2px;
-  transition: background 0.12s ease, outline-color 0.12s ease;
+  transition:
+    background var(--dur-fast, 120ms) var(--ease, ease),
+    outline-color var(--dur-fast, 120ms) var(--ease, ease);
 }
 
 /* 卡片统一禁止原生拖拽（排序用 pointer 事件自绘 ghost） */
@@ -228,15 +225,13 @@ button:focus {
   pointer-events: none;
 }
 
-/* 跟手的克隆体（定位由 JS 的 style 提供；Dock 同款：浮起 + 阴影，不带不透明底） */
+/* 跟手的克隆体（定位由 JS 的 style 提供；Dock 同款：浮起 + 阴影） */
 .ac-app.drag-ghost {
-  opacity: 0.95;
+  opacity: 0.96;
   transform: scale(1.05);
-  border-radius: 12px;
+  background: var(--surface-2, #1e2025);
   border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.6));
+  box-shadow: var(--shadow-card, 0 6px 18px rgba(0, 0, 0, 0.38));
   pointer-events: none;
 }
 
@@ -253,24 +248,24 @@ body.ac-dragging * {
   position: absolute;
   top: 4px;
   right: 4px;
-  height: 14px;
-  padding: 0 5px;
-  border-radius: 7px;
-  background: rgba(53, 132, 228, 0.9);
-  color: #fff;
+  height: 16px;
+  padding: 0 var(--space-1, 4px);
+  border-radius: var(--radius-pill, 8px);
+  background: var(--accent, #3584e4);
+  color: var(--on-accent, #ffffff);
   font-size: 9px;
-  line-height: 14px;
+  line-height: 16px;
   font-weight: 600;
   pointer-events: none;
 }
 
 .ac-app:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--hover, rgba(255, 255, 255, 0.1));
 }
 
 .ac-app.selected {
-  background: rgba(255, 255, 255, 0.16);
-  outline-color: var(--accent);
+  background: var(--accent-soft, rgba(53, 132, 228, 0.18));
+  outline-color: var(--accent, #3584e4);
 }
 
 .ac-icon {
@@ -288,32 +283,112 @@ body.ac-dragging * {
   height: 48px;
   object-fit: contain;
   -webkit-user-drag: none;
-  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.45));
+  filter: drop-shadow(0 3px 8px var(--shadow-icon, rgba(0, 0, 0, 0.45)));
 }
 
 /* 无图标时的首字母色块（配色参考 Dock） */
 .ac-letter {
   width: 44px;
   height: 44px;
-  border-radius: 11px;
+  border-radius: var(--radius-md, 10px);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 20px;
   font-weight: 700;
-  color: #fff;
+  color: #ffffff;
 }
 
 .ac-name {
   max-width: 100%;
   font-size: 12px;
   line-height: 1.25;
-  color: var(--text);
+  color: var(--text, #f2f3f5);
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* ==================== 分页器 ==================== */
+
+.ac-pager {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1, 4px);
+  height: 32px;
+}
+
+.ac-pager-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill, 13px);
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
+  background: transparent;
+  transition:
+    background var(--dur-fast, 120ms) var(--ease, ease),
+    color var(--dur-fast, 120ms) var(--ease, ease);
+}
+
+.ac-pager-btn:hover:not(:disabled) {
+  background: var(--hover, rgba(255, 255, 255, 0.1));
+  color: var(--text, #f2f3f5);
+}
+
+.ac-pager-btn:disabled {
+  opacity: 0.32;
+}
+
+.ac-dots {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 8px);
+  padding: 0 var(--space-3, 8px);
+  max-width: 56%;
+  overflow: hidden;
+}
+
+.ac-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--text-faint, rgba(255, 255, 255, 0.45));
+  transition:
+    background var(--dur-fast, 120ms) var(--ease, ease),
+    transform var(--dur-fast, 120ms) var(--ease, ease);
+}
+
+.ac-dot:hover {
+  background: var(--text-dim, rgba(255, 255, 255, 0.72));
+}
+
+/* 选中页：只改颜色 + 轻微放大（transform 不触发重排，切换页时无布局跳动） */
+.ac-dot.active {
+  border-radius: 50%;
+  background: var(--accent, #3584e4);
+  transform: scale(1.35);
+}
+
+.ac-dot-gap {
+  color: var(--text-faint, rgba(255, 255, 255, 0.45));
+  font-size: 10px;
+  line-height: 1;
+  user-select: none;
+}
+
+.ac-pager-count {
+  margin-left: var(--space-1, 4px);
+  font-size: 11.5px;
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* ==================== 状态（加载 / 失败 / 空） ==================== */
@@ -325,24 +400,25 @@ body.ac-dragging * {
   justify-content: center;
   flex: 1 1 auto;
   min-height: 0;
-  gap: 12px;
-  /* 加载/失败/空态填满滚动区并垂直居中，不要贴在顶部 */
+  gap: var(--space-4, 12px);
+  /* 加载/失败/空态填满内容区并垂直居中，不要贴在顶部 */
   padding: 24px 16px;
-  color: var(--text-dim);
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
   font-size: 13px;
 }
 
 .ac-retry {
-  height: 30px;
-  padding: 0 14px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--text);
+  height: 32px;
+  padding: 0 var(--space-4, 16px);
+  border-radius: var(--radius-md, 10px);
+  background: var(--hover, rgba(255, 255, 255, 0.12));
+  color: var(--text, #f2f3f5);
   font-size: 12px;
+  transition: background var(--dur-fast, 120ms) var(--ease, ease);
 }
 
 .ac-retry:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--hover-strong, rgba(255, 255, 255, 0.2));
 }
 
 /* ==================== 底部 ==================== */
@@ -351,7 +427,7 @@ body.ac-dragging * {
   flex: none;
   text-align: center;
   font-size: 12px;
-  color: var(--danger);
+  color: var(--danger, #f66152);
 }
 
 /* 导入/移除结果提示：成功绿色、失败红色，3s 后自动隐藏 */
@@ -359,15 +435,15 @@ body.ac-dragging * {
   flex: none;
   text-align: center;
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
 }
 
 .ac-toast.ok {
-  color: var(--ok);
+  color: var(--ok, #57e389);
 }
 
 .ac-toast.err {
-  color: var(--danger);
+  color: var(--danger, #f66152);
 }
 
 /* ==================== 导入应用的右键菜单 ==================== */
@@ -375,37 +451,40 @@ body.ac-dragging * {
 .ac-menu {
   position: fixed;
   min-width: 140px;
-  padding: 5px;
-  background: rgba(36, 36, 40, 0.97);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  padding: var(--space-1, 4px);
+  background: var(--surface-3, rgba(38, 40, 46, 0.97));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 10px);
+  box-shadow: var(--shadow-pop, 0 8px 24px rgba(0, 0, 0, 0.55));
   z-index: 40;
 }
 
 .ac-menu-item {
   display: block;
   width: 100%;
-  padding: 7px 10px;
-  border-radius: 6px;
+  padding: var(--space-3, 8px) var(--space-4, 12px);
+  border-radius: var(--radius-sm, 6px);
   text-align: left;
   font-size: 12px;
-  color: var(--text);
+  color: var(--text, #f2f3f5);
   white-space: nowrap;
+  transition: background var(--dur-fast, 120ms) var(--ease, ease);
 }
 
 .ac-menu-item:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--hover-strong, rgba(255, 255, 255, 0.12));
 }
 
 .ac-hint {
   flex: none;
   text-align: center;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
+  line-height: 20px;
+  /* 12px 正文提示用 --text-dim，保证两套主题对比度 ≥3:1（§6） */
+  color: var(--text-dim, rgba(255, 255, 255, 0.72));
   pointer-events: none;
 }
 
-.ac-drag-hint {
-  color: rgba(255, 255, 255, 0.32);
+#ac-drag-hint {
+  color: inherit;
 }

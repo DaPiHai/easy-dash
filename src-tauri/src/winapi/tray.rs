@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use windows::core::{BSTR, IUnknown};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -37,16 +37,15 @@ use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationCondition, IUIAutomationElement,
     IUIAutomationElementArray, TreeScope_Children, TreeScope_Descendants,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowThreadProcessId, IsWindowVisible, SetCursorPos, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
-    GW_OWNER, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible, SetCursorPos, GWL_EXSTYLE,
+    GWL_STYLE, GW_OWNER, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::types::TrayGeom;
@@ -306,7 +305,14 @@ fn pick_overflow(candidates: &[TrayGeom], icons: &[TrayGeom]) -> Option<TrayGeom
 /// 枚举任务栏托盘中的图标（按屏幕 x 升序，overflow 最左）。
 ///
 /// 必须在已初始化 COM 的线程上调用；建议放在专用工作线程（tray_mirror）。
+/// 任务栏被隐藏时，UIA 元素会全部变成 offscreen、鼠标点击也落不到任务栏上，
+/// 因此整个枚举过程包在 `taskbar::with_taskbar_visible` 桥接里
+/// （任务栏被临时显示，alpha=0 肉眼不可见；结束后自动重新隐藏）。
 pub fn enumerate() -> Result<Vec<TrayGeom>, String> {
+    super::taskbar::bridged(enumerate_inner)
+}
+
+fn enumerate_inner() -> Result<Vec<TrayGeom>, String> {
     let scan = scan_taskbar()?;
     let n = unsafe { scan.elements.Length() }
         .map_err(|e| format!("UIA 读取元素数量失败: {e}"))?
@@ -339,7 +345,68 @@ pub fn enumerate() -> Result<Vec<TrayGeom>, String> {
 /// 这些托盘按钮虽然对外暴露 InvokePattern，但 UIA 调用不会展开托盘浮出菜单/
 /// 通知中心，必须发真实指针事件；光标是全局共享资源，因此先保存当前位置，
 /// 点完立即复原，并用互斥量串行化并发点击。
+///
+/// 任务栏隐藏时点击目标窗口是隐藏的（鼠标事件会穿透到桌面），因此点击包在
+/// 桥接里：临时显示任务栏（alpha=0 不可见）→ 点击 → 重新隐藏。
 pub fn click_at(x: i32, y: i32, button: &str) -> Result<(), String> {
+    super::taskbar::bridged(|| click_at_held(x, y, button))
+}
+
+/// 不自行切换任务栏可见性的原始点击。
+///
+/// 供已经持有 `taskbar::TaskbarHold` 的调用方使用（托盘点击要在弹窗关闭前
+/// 一直保持任务栏「显示但透明」，不能中途让 click 内部的桥接把任务栏藏掉）。
+pub fn click_at_held(x: i32, y: i32, button: &str) -> Result<(), String> {
+    // 隐身模式下任务栏窗口始终 visible 但鼠标穿透：发真实指针事件前临时关掉
+    // 穿透，结束后恢复；否则点击会落到下层窗口上（托盘点击"没反应"）。
+    let _clickable = super::taskbar::clickable_guard();
+    click_at_inner(x, y, button)
+}
+
+/// 备用输入路径：把 WM_LBUTTONDOWN/UP（或右键）直接 PostMessage 到任务栏
+/// 窗口的客户区坐标。XAML 任务栏一般只吃真实指针事件，这里仅作为
+/// `mouse_event` 点击后没有弹窗时的最后兜底。
+pub fn click_taskbar_postmessage(x: i32, y: i32, button: &str) -> Result<(), String> {
+    use windows::Win32::Foundation::WPARAM;
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        PostMessageW, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    };
+
+    let hwnd = taskbar_hwnd().ok_or_else(|| "未找到任务栏窗口 Shell_TrayWnd".to_string())?;
+    let mut pt = POINT { x, y };
+    unsafe {
+        let _ = ScreenToClient(hwnd, &mut pt);
+    }
+    // lParam 低 16 位 = x，高 16 位 = y（客户区坐标）
+    let lparam = (((pt.y as isize) & 0xffff) << 16) | ((pt.x as isize) & 0xffff);
+    let (down, up, down_wparam) = if button == "right" {
+        (WM_RBUTTONDOWN, WM_RBUTTONUP, 2usize)
+    } else {
+        (WM_LBUTTONDOWN, WM_LBUTTONUP, 1usize)
+    };
+    unsafe {
+        PostMessageW(hwnd, down, WPARAM(down_wparam), LPARAM(lparam))
+            .map_err(|e| format!("PostMessage 按下失败: {e}"))?;
+        std::thread::sleep(Duration::from_millis(30));
+        PostMessageW(hwnd, up, WPARAM(0), LPARAM(lparam))
+            .map_err(|e| format!("PostMessage 抬起失败: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 弹窗是否仍然存在且可见（托盘点击后轮询「弹窗是否关闭」用）
+pub fn popup_alive(handle: isize) -> bool {
+    let hwnd = HWND(handle as *mut _);
+    unsafe { IsWindow(hwnd).as_bool() && IsWindowVisible(hwnd).as_bool() }
+}
+
+/// 窗口屏幕矩形（诊断日志用）
+pub fn window_screen_rect(handle: isize) -> Option<(i32, i32, i32, i32)> {
+    window_rect(HWND(handle as *mut _)).map(rect_tuple)
+}
+
+fn click_at_inner(x: i32, y: i32, button: &str) -> Result<(), String> {
     static CLICK_LOCK: Mutex<()> = Mutex::new(());
     let _guard = CLICK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -368,7 +435,15 @@ pub fn click_at(x: i32, y: i32, button: &str) -> Result<(), String> {
 }
 
 /// 打开 Windows 原生通知中心（左键点任务栏系统时钟按钮 SystemTray.OmniButton）
+///
+/// 整个流程（UIA 扫描 + 真实点击）都在托盘桥接里执行：任务栏隐藏时
+/// 时钟按钮既不可见也点不到。内层 click_at 的桥接会识别为嵌套调用，
+/// 不会重复切换可见性。
 pub fn open_system_notification_center() -> Result<(), String> {
+    super::taskbar::bridged(open_system_notification_center_inner)
+}
+
+fn open_system_notification_center_inner() -> Result<(), String> {
     let scan = scan_taskbar()?;
     let n = unsafe { scan.elements.Length() }
         .map_err(|e| format!("UIA 读取元素数量失败: {e}"))?
@@ -393,7 +468,11 @@ pub fn open_system_notification_center() -> Result<(), String> {
         if w <= 0 || h <= 0 {
             continue;
         }
-        return click_at(x + w / 2, y + h / 2, "left");
+        let clicked = click_at(x + w / 2, y + h / 2, "left");
+        // 通知中心是独立窗口，但 Shell 在任务栏重新隐藏后可能立即把它收起：
+        // 点击后保持任务栏「显示但透明」一小段时间，给浮层完成创建/脱离。
+        std::thread::sleep(Duration::from_millis(600));
+        return clicked;
     }
     Err("未找到任务栏系统时钟按钮（SystemTray.OmniButton）".into())
 }
@@ -423,11 +502,9 @@ pub fn is_available() -> bool {
 
 // ==================== 托盘弹窗顶栏锚定 ====================
 
-/// 弹窗候选的最小/最大边长（像素）：太小的（tooltip）和太大的（主窗口）都不迁移
+/// 弹窗候选的最小/最大边长（像素）：太小的（tooltip）和太大的（主窗口）都不算
 const POPUP_MIN_SIZE: i32 = 60;
 const POPUP_MAX_SIZE: i32 = 900;
-/// 弹窗顶部目标位置（逻辑像素）：顶栏 32px + 间距，按 DPI 缩放
-const TOPBAR_OFFSET_LOGICAL: f32 = 40.0;
 
 /// 顶层可见窗口快照（用于识别点击后新出现的弹窗）。
 ///
@@ -553,13 +630,14 @@ fn popup_score(
 /// `before` 为点击前快照；`anchor_x` 为顶栏图标中心 x；`tray_point` 为原生托盘点击点；
 /// `own_hwnds` 为本应用自己的窗口（topbar/dock/overview/launcher），
 /// 只有它们会被排除，本进程其它窗口（Tauri 托盘菜单）照常参与迁移。
-/// 返回被移动的窗口句柄；没有可迁移弹窗时返回 None。
+/// 返回 `(弹窗句柄, 是否真的移动过)`；没有可迁移弹窗时返回 None。
+/// 返回 `moved=false` 表示这是 Shell 经典菜单（不能搬），调用方需把任务栏显示出来。
 pub fn relocate_popup(
     before: &[isize],
-    anchor_x: i32,
+    _anchor_x: i32,
     tray_point: (i32, i32),
     own_hwnds: &[isize],
-) -> Option<isize> {
+) -> Option<(isize, bool)> {
     let own_pid = unsafe { GetCurrentProcessId() };
 
     // 弹窗不一定是点击后立刻出现（QQ 的应用浮层要几百毫秒），
@@ -595,22 +673,11 @@ pub fn relocate_popup(
         std::thread::sleep(Duration::from_millis(40));
     }
 
-    let (handle, priority) = chosen?;
-    let hwnd = HWND(handle as *mut _);
-    // 菜单类浮层创建后尺寸还会继续变化，稍等再取最终矩形
-    if priority >= 2 {
-        std::thread::sleep(Duration::from_millis(60));
-    }
-    let rect = window_rect(hwnd)?;
-    if !move_popup(hwnd, rect, anchor_x, tray_point) {
-        return None;
-    }
-    // 部分应用会立刻把自己挪回去：250ms 后按（可能已变化的）尺寸再校正一次
-    std::thread::sleep(Duration::from_millis(250));
-    if let Some(rect2) = window_rect(hwnd) {
-        let _ = move_popup(hwnd, rect2, anchor_x, tray_point);
-    }
-    Some(handle)
+    let (handle, _priority) = chosen?;
+    // **不搬动任何弹窗**：Win11 的 Shell 托盘菜单是 XAML/DirectComposition 窗口，
+    // 外部 `SetWindowPos` 搬走后内容不跟随重绘（实测 rect 正确但屏幕上什么都没有）。
+    // 保持原生位置（就在光标旁），由调用方把任务栏显示出来，保证菜单可见、可点。
+    Some((handle, false))
 }
 
 fn window_rect(hwnd: HWND) -> Option<RECT> {
@@ -623,59 +690,6 @@ fn window_rect(hwnd: HWND) -> Option<RECT> {
             return None;
         }
         Some(rect)
-    }
-}
-
-/// 把弹窗移到屏幕顶部、顶栏图标正下方（水平居中并夹取在显示器内）
-fn move_popup(hwnd: HWND, rect: RECT, anchor_x: i32, tray_point: (i32, i32)) -> bool {
-    let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-    let monitor = monitor_rect_at(tray_point.0, tray_point.1);
-    let y = (TOPBAR_OFFSET_LOGICAL * dpi_scale(hwnd)).round() as i32;
-    let min_x = monitor.left + 4;
-    let max_x = (monitor.right - w - 4).max(min_x);
-    let x = (anchor_x - w / 2).clamp(min_x, max_x);
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            x,
-            y,
-            w,
-            h,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-        .is_ok()
-    }
-}
-
-/// 指定屏幕坐标所在显示器的矩形（物理像素）
-fn monitor_rect_at(x: i32, y: i32) -> RECT {
-    unsafe {
-        let hmon = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
-        let mut mi = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        if GetMonitorInfoW(hmon, &mut mi).as_bool() {
-            mi.rcMonitor
-        } else {
-            RECT {
-                left: 0,
-                top: 0,
-                right: 1920,
-                bottom: 1080,
-            }
-        }
-    }
-}
-
-/// 窗口所在显示器的缩放比例（96 DPI = 1.0）；拿不到时按 100% 处理
-fn dpi_scale(hwnd: HWND) -> f32 {
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
-    if dpi == 0 {
-        1.0
-    } else {
-        dpi as f32 / 96.0
     }
 }
 

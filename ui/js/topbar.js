@@ -3,11 +3,14 @@
 //
 // 依赖方向：本模块是唯一入口（topbar.html 只引它），其余都是被它 import 的叶子模块，
 // 不存在循环依赖：panels.js 只依赖 api.js。
+import "./theme.js";
+import "./cursor-glow.js";
 import { invoke, invokeRetry, listen } from "./api.js";
 import { initPanels, registerPanel, togglePanel, closePanels, isPanelOpen, BAR_HEIGHT } from "./panels.js";
 import { createNotificationsPanel } from "./notifications.js";
 import { createControlCenterPanel, ICONS } from "./control-center.js";
 import { startTray, stopTray } from "./tray.js";
+import { createWheelStepper } from "./wheel.js";
 
 const WEEKDAY_CN = ["日", "一", "二", "三", "四", "五", "六"];
 
@@ -26,6 +29,11 @@ const dateEl = document.getElementById("date");
 const clockEl = document.getElementById("clock");
 const unreadDot = document.getElementById("unread-dot");
 const trayEl = document.getElementById("tray");
+const volOsd = document.getElementById("vol-osd");
+const volOsdIco = document.getElementById("vol-osd-ico");
+const volOsdText = document.getElementById("vol-osd-text");
+const volOsdFill = document.getElementById("vol-osd-fill");
+let volOsdTimer = null;
 
 // ---------- 顶部时钟 ----------
 
@@ -57,7 +65,11 @@ function renderStatusIcons(s) {
   const vol = typeof s.volume === "number" ? s.volume : 0;
 
   let html = wifiOn ? ICONS.wifi : ICONS.wifiOff;
-  html += muted || vol === 0 ? ICONS.volumeMuted : ICONS.volume;
+  // 音量图标包一层：滚轮调节的命中区（并给出可发现的 hover 底与提示）
+  html +=
+    '<span class="cc-vol" data-role="volume" title="滚轮调节音量">' +
+    (muted || vol === 0 ? ICONS.volumeMuted : ICONS.volume) +
+    "</span>";
 
   if (s.battery !== null && s.battery !== undefined) {
     const pct = Math.max(6, Math.min(100, s.battery));
@@ -71,6 +83,30 @@ function renderStatusIcons(s) {
     html += '<span class="cc-bat-pct">' + s.battery + "%</span>";
   }
   ccIconsEl.innerHTML = html;
+}
+
+// ---------- 滚轮音量 OSD（顶栏内浮层，窗口常态只有 32px 高） ----------
+
+function showVolumeOsd(value, muted) {
+  if (!volOsd) return;
+  const v = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  const silent = !!muted || v === 0;
+  if (volOsdIco) volOsdIco.innerHTML = silent ? ICONS.volumeMuted : ICONS.volume;
+  if (volOsdText) volOsdText.textContent = silent ? "静音" : v + "%";
+  if (volOsdFill) volOsdFill.style.width = v + "%";
+  // 定位在控制中心入口左侧（不遮住中间时钟），窗口宽度 = 屏幕宽度
+  if (ccBtn) {
+    const rect = ccBtn.getBoundingClientRect();
+    volOsd.style.right = Math.max(8, window.innerWidth - rect.left + 8) + "px";
+  }
+  volOsd.classList.add("show");
+  volOsd.setAttribute("aria-hidden", "false");
+  if (volOsdTimer) clearTimeout(volOsdTimer);
+  volOsdTimer = setTimeout(() => {
+    volOsdTimer = null;
+    volOsd.classList.remove("show");
+    volOsd.setAttribute("aria-hidden", "true");
+  }, 1200);
 }
 
 // ---------- 按钮绑定 ----------
@@ -99,6 +135,29 @@ function bindButtons() {
       if (!ready || config.controlCenter === false) return;
       togglePanel("control");
     });
+    // 音量图标滚轮：在「任务栏位置」也能调音量（凭经验不打断面板交互）
+    const volumeStepper = createWheelStepper();
+    ccBtn.addEventListener(
+      "wheel",
+      (e) => {
+        if (!ready || config.controlCenter === false) return;
+        if (!e.target || typeof e.target.closest !== "function") return;
+        if (!e.target.closest("[data-role='volume']")) return;
+        const steps = volumeStepper(e);
+        if (!steps) return;
+        e.preventDefault();
+        if (!controlPanel || typeof controlPanel.nudgeVolume !== "function") return;
+        const pending = controlPanel.nudgeVolume(steps);
+        if (pending && typeof pending.then === "function") {
+          pending
+            .then((r) => {
+              if (r && typeof r.value === "number") showVolumeOsd(r.value, !!r.muted);
+            })
+            .catch(() => {});
+        }
+      },
+      { passive: false }
+    );
   }
 
   const gearBtn = document.getElementById("gear-btn");
@@ -117,7 +176,10 @@ function bindButtons() {
 // ---------- 面板模块装配 ----------
 
 function createPanels() {
-  notificationsPanel = createNotificationsPanel({ onUnreadChange: setUnread });
+  notificationsPanel = createNotificationsPanel({
+    onUnreadChange: setUnread,
+    onOpenApp: () => closePanels(),
+  });
   registerPanel("notifications", {
     onOpen: () => notificationsPanel.onOpen(),
     onClose: () => notificationsPanel.onClose(),
@@ -174,15 +236,32 @@ function listenEvents() {
   safeListen("fullscreen-changed", (e) => {
     if (e && e.payload === true) {
       closePanels();
-      document.body.classList.add("hidden");
+      document.body.classList.add("fs-hidden");
     } else {
-      document.body.classList.remove("hidden");
+      document.body.classList.remove("fs-hidden");
     }
   });
 
   // 配置热更新
   safeListen("config-changed", (e) => {
     if (e && e.payload) applyConfig(e.payload);
+  });
+
+  // 窗口从隐藏切到显示时（例如重新开启副屏顶栏）重新取一次全屏状态：
+  // 单靠启动时那一次会错过「隐藏期间进入/退出全屏」，重新显示后会压在全屏窗口上。
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState !== "visible") return;
+    try {
+      const fs = await invoke("get_fullscreen_state");
+      if (fs) {
+        closePanels();
+        document.body.classList.add("fs-hidden");
+      } else {
+        document.body.classList.remove("fs-hidden");
+      }
+    } catch (e) {
+      /* 命令尚未就绪时忽略，后续 fullscreen-changed 会补 */
+    }
   });
 }
 
@@ -225,6 +304,15 @@ async function main() {
 
   applyConfig(config);
   listenEvents();
+  // 新创建的顶栏可能错过全屏状态事件：主动取一次当前屏幕的全屏状态
+  try {
+    if (await invoke("get_fullscreen_state")) {
+      closePanels();
+      document.body.classList.add("fs-hidden");
+    }
+  } catch (e) {
+    /* 启动早期命令可能尚未就绪 */
+  }
   ready = true;
 }
 

@@ -56,6 +56,16 @@ pub fn set_brightness(percent: u32) -> Result<(), String> {
     winapi::brightness::set(percent)
 }
 
+/// 相对调节系统音量（滚轮）：返回 (新音量, 调节后是否静音)。
+pub fn nudge_volume(delta: i32) -> Result<(u8, bool), String> {
+    winapi::volume::nudge(delta)
+}
+
+/// 相对调节屏幕亮度（滚轮）：返回新亮度。
+pub fn nudge_brightness(delta: i32) -> Result<u32, String> {
+    winapi::brightness::nudge(delta)
+}
+
 /// 打开 / 关闭 Wi-Fi。
 pub fn set_wifi(enabled: bool) -> Result<(), String> {
     winapi::wifi::set_enabled(enabled)

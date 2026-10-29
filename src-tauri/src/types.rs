@@ -40,10 +40,22 @@ pub struct NotificationItem {
     pub app_key: String,
     pub app_name: String,
     pub app_icon: Option<String>,
+    /// 启动目标：`shell:AppsFolder\<AUMID>` 或 exe/.lnk 路径；None = 无法映射到应用
+    pub launch: Option<String>,
     pub title: String,
     pub body: String,
     /// Unix 毫秒时间戳
     pub ts_ms: u64,
+}
+
+/// 相对调节后的音量状态（`nudge_volume` 返回值）
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeLevel {
+    /// 0..=100
+    pub value: u8,
+    /// 调节后是否仍处于静音
+    pub muted: bool,
 }
 
 /// Wi-Fi 状态
@@ -143,4 +155,33 @@ pub struct AppEntry {
     pub args: String,
     /// "classic" | "uwp" | "import"
     pub kind: String,
+}
+
+/// 主题状态（Rust → 前端，`theme-changed` 事件 payload 与 `get_theme_state` 返回）
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeState {
+    /// 用户选择的模式："light" | "dark"（v0.2.2 起「跟随系统」已移除）
+    pub mode: String,
+    /// 实际生效的外观："light" | "dark"（现在与 mode 相同）
+    pub resolved: String,
+    /// 界面材质："solid" | "liquid" | "glow"（与 light/dark 正交）
+    pub material: String,
+    /// 系统当前是否深色；None = 读取失败/未知。
+    /// v0.2.2 起仅保留该字段兼容前端，不再参与主题解析。
+    pub system_dark: Option<bool>,
+    /// 选择浅色/深色时是否同步修改 Windows 系统主题
+    pub sync_system_theme: bool,
+}
+
+/// 任务栏隐藏状态（`get_taskbar_state` 返回）
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskbarState {
+    /// 任务栏当前是否不可见
+    pub hidden: bool,
+    /// 托盘桥接是否正常（false 且 hidden=true 表示托盘镜像可能失效）
+    pub bridge_ok: bool,
+    /// 当前系统是否支持自动隐藏任务栏
+    pub supported: bool,
 }

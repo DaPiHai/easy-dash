@@ -2,8 +2,29 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <!-- 首帧预置：主题只支持 light/dark（旧版 "system" 归一为 dark），
+       材质为 solid/liquid/glow（非法值归一 solid）；theme.js 随后按后端配置校准 -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("easydash.theme");
+        var theme = t === "light" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", theme);
+        document.documentElement.style.colorScheme = theme;
+        var m = localStorage.getItem("easydash.material");
+        var material = m === "liquid" || m === "glow" ? m : "solid";
+        document.documentElement.setAttribute("data-material", material);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.setAttribute("data-material", "solid");
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="css/shared.css" />
   <link rel="stylesheet" href="css/overview.css" />
+  <link rel="stylesheet" href="css/materials.css" />
+  <link rel="stylesheet" href="css/motion.css" />
+  <link rel="stylesheet" href="css/cursor-glow.css" />
 </head>
 <body>
   <div id="backdrop">

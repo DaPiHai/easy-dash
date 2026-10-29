@@ -1,8 +1,13 @@
-// 中文月历渲染（纯原生 Date 计算，不引第三方依赖）。
-// 周一为第一列，表头「一 二 三 四 五 六 日」，今天高亮，非当月日期淡化显示。
-// 叠加 cn-holidays.js 的法定节假日数据：休息日红字 + 节日短名，调休上班日显示「班」角标。
+// 中文月历渲染（纯原生 Date 计算 + lunar.js 农历换算，不引第三方依赖）。
+// 周一为第一列，表头「一 二 三 四 五 六 日」，今天 accent 胶囊高亮，非当月日期淡化显示。
+// 第二行：法定节假日优先（休息日红字节日短名 / 调休琥珀「班」角标），
+// 无节日时显示农历（初一显示月名，其余显示日名）。
+// 叠加 cn-holidays.js 的法定节假日数据；农历数据来自 ui/js/lunar.js。
+// 样式前缀 cal-（见 ui/css/panels.css）。
 import { escapeHtml } from "./api.js";
+import { icon } from "./icons.js";
 import { holidayFor } from "./cn-holidays.js";
+import { solarToLunar, formatLunarShort, formatLunarFull, ganzhiYear } from "./lunar.js";
 
 const WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -32,6 +37,18 @@ export function formatMonthTitle(view) {
 function shortName(name) {
   const s = String(name || "").trim();
   return s.length > 4 ? s.slice(0, 4) : s;
+}
+
+/**
+ * 当前显示月份所属的农历年 → 「丙午马年」。
+ * 取当月 15 号换算（1 月初可能还属上一个农历年，月中一定落在该农历年的月份内）；
+ * 取不到时回退到当月 1 号；再失败返回空串（超出 lunar.js 范围）。
+ */
+function ganzhiOfMonth(view) {
+  const mid = solarToLunar(view.year, view.month + 1, 15);
+  const lunar = mid || solarToLunar(view.year, view.month + 1, 1);
+  if (!lunar || typeof lunar.lunarYear !== "number") return "";
+  return ganzhiYear(lunar.lunarYear);
 }
 
 /**
@@ -65,6 +82,8 @@ export function renderCalendar(container, view) {
     const holiday = isOther ? null : holidayFor(y, m, day);
     const isOff = !!(holiday && holiday.off === true);
     const isWork = !!(holiday && holiday.off === false);
+    // 农历：前后月也换算（淡化显示），超出 lunar.js 支持范围时为 null
+    const lunar = solarToLunar(y, m + 1, day);
 
     const cls = [
       "cal-day",
@@ -77,22 +96,43 @@ export function renderCalendar(container, view) {
       .join(" ");
 
     let inner = '<span class="cal-day-num">' + day + "</span>";
+    // 第二行：节日优先（休息日红字节日短名 / 调休「班」角标），否则农历
     if (isOff) {
       inner += '<span class="cal-holiday">' + escapeHtml(shortName(holiday.name)) + "</span>";
     } else if (isWork) {
       inner += '<span class="cal-work">班</span>';
+    } else if (lunar) {
+      inner += '<span class="cal-lunar">' + escapeHtml(formatLunarShort(lunar)) + "</span>";
     }
-    cells += '<div class="' + cls + '">' + inner + "</div>";
+
+    // title：公历 + 完整农历 + 节日全名
+    let titleText = y + "年" + (m + 1) + "月" + day + "日";
+    if (lunar) titleText += " · " + formatLunarFull(lunar);
+    if (holiday) titleText += " · " + holiday.name;
+    const titleAttr = ' title="' + escapeHtml(titleText) + '"';
+
+    cells += '<div class="' + cls + '"' + titleAttr + ">" + inner + "</div>";
   }
 
   let weekdays = "";
   for (const w of WEEKDAY_CN) weekdays += '<div class="cal-wd">' + w + "</div>";
 
+  const ganzhi = ganzhiOfMonth(view);
+  const titleHtml =
+    '<span class="cal-title">' +
+    formatMonthTitle(view) +
+    (ganzhi ? '<span class="cal-ganzhi"> · ' + escapeHtml(ganzhi) + "</span>" : "") +
+    "</span>";
+
   container.innerHTML =
     '<div class="cal-head">' +
-    '<button class="cal-nav" type="button" data-cal-dir="-1" aria-label="上个月">‹</button>' +
-    '<span class="cal-title">' + formatMonthTitle(view) + "</span>" +
-    '<button class="cal-nav" type="button" data-cal-dir="1" aria-label="下个月">›</button>' +
+    '<button class="cal-nav" type="button" data-cal-dir="-1" aria-label="上个月">' +
+    icon("chevronLeft", { size: 14 }) +
+    "</button>" +
+    titleHtml +
+    '<button class="cal-nav" type="button" data-cal-dir="1" aria-label="下个月">' +
+    icon("chevronRight", { size: 14 }) +
+    "</button>" +
     "</div>" +
     '<div class="cal-grid">' + weekdays + cells + "</div>";
 }

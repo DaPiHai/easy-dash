@@ -1,48 +1,77 @@
+/* ============================================================
+   窗口概览（Mission Control 风格）样式
+   - 全屏遮罩 + 窗口卡片网格；卡片 hover 提亮描边
+   - 颜色/阴影/圆角/间距/时长全部走 shared.css token，亮暗两套自动生效
+   ============================================================ */
+
 body {
   height: 100vh;
 }
 
+/* ==================== 全屏遮罩 ==================== */
+
 #backdrop {
   height: 100vh;
-  background: rgba(12, 12, 14, 0.72);
+  background: var(--scrim);
   padding: 60px 64px 40px;
   overflow: auto;
+  transition: background-color var(--dur-base) var(--ease);
 }
+
+#backdrop::-webkit-scrollbar {
+  width: var(--space-3);
+}
+
+#backdrop::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#backdrop::-webkit-scrollbar-thumb {
+  background: var(--track);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+
+#backdrop::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ==================== 卡片网格 ==================== */
 
 #grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 28px;
+  gap: var(--space-6);
   max-width: 1500px;
   margin: 0 auto;
 }
 
+/* ==================== 窗口卡片 ==================== */
+
 .card {
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  background: rgba(40, 40, 44, 0.92);
-  border: 1px solid var(--panel-border);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
   cursor: pointer;
-  opacity: 0;
-  transform: scale(0.92);
-  animation: card-in 0.28s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
-  transition: outline 0.12s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  transition: outline-color var(--dur-fast) var(--ease), transform var(--dur-base) var(--ease),
+    box-shadow var(--dur-base) var(--ease), background-color var(--dur-base) var(--ease),
+    border-color var(--dur-base) var(--ease);
   outline: 2px solid transparent;
 }
 
 .card:hover {
-  outline-color: rgba(255, 255, 255, 0.55);
+  outline-color: var(--border-strong);
+  border-color: var(--border-strong);
   transform: scale(1.02);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-pop);
 }
 
-@keyframes card-in {
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
+/* ==================== 缩略图 ==================== */
 
 .thumb {
   display: block;
@@ -50,7 +79,7 @@ body {
   aspect-ratio: 16 / 10;
   object-fit: cover;
   object-position: top;
-  background: #101014;
+  background: var(--surface-inset);
 }
 
 .thumb.fallback {
@@ -63,14 +92,17 @@ body {
   width: 72px;
   height: 72px;
   object-fit: contain;
-  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.5));
+  filter: drop-shadow(0 4px 14px var(--shadow-icon));
 }
+
+/* ==================== 底部信息条 ==================== */
 
 .info {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 9px 12px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-2);
 }
 
 .info .icon {
@@ -88,6 +120,8 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ==================== 空态 / 底部提示 ==================== */
+
 .empty {
   position: absolute;
   inset: 0;
@@ -95,17 +129,23 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  color: rgba(255, 255, 255, 0.55);
+  gap: var(--space-4);
+  color: var(--text-faint);
   font-size: 15px;
+}
+
+/* HTML 里的 SVG 用硬编码描边，这里统一跟随主题色 */
+.empty svg rect,
+.empty svg path {
+  stroke: currentColor;
 }
 
 .hint {
   position: fixed;
-  bottom: 14px;
+  bottom: var(--space-4);
   left: 50%;
   transform: translateX(-50%);
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--text-faint);
   font-size: 12px;
   pointer-events: none;
 }

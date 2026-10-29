@@ -17,7 +17,7 @@ pub fn create(app: &App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "open" => overview::show(app),
+            "open" => overview::show_at_cursor(app),
             "reload" => {
                 let _ = crate::commands::do_reload_config(app);
             }
@@ -31,7 +31,7 @@ pub fn create(app: &App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                overview::toggle(tray.app_handle());
+                overview::toggle_at_cursor(tray.app_handle());
             }
         })
         .build(app)?;

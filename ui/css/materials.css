@@ -1,0 +1,926 @@
+/* ============================================================
+   easy-dash 材质层：液态玻璃（liquid）/ 柔光玻璃（glow）
+
+   使用约定：
+   1) 材质与明暗正交：<html data-material="solid|liquid|glow"> 只覆盖 shared.css 的
+      token 与少量外壳结构样式；solid（默认）不产生任何规则，观感与改造前完全一致。
+   2) 透明窗口无法模糊桌面（见 docs/design-system.md §1），玻璃感由
+      「半透明表面（真实透出桌面）+ 层叠霞光 + 1px 镜面边 + 磨砂噪点 + 大圆角 + 柔和阴影」合成；
+      backdrop-filter 只用于同窗口内确有下层页内内容的弹层（电源菜单 / 右键菜单 / tooltip）。
+   3) token 覆盖统一用「暗色 :not([data-theme="light"])」+「浅色 [data-theme="light"]」两种
+      选择器，语义与 shared.css 的系统浅色回退一致，避免出现第三种分支。
+   4) 文字 token（--text / --text-dim / --text-faint / --accent / --danger / --ok / --warn）
+      一律不覆盖：对比度只由表面 alpha 决定，正文 ≥ 4.5:1 靠 alpha 下限保证。
+   5) 液态玻璃 2.0（v0.5）：.panel 不再是「一层半透明表面」，而是四层光学结构
+      （玻璃体 ::before / 镜面层 ::after / 边缘折射层 .lg-edge / 透明本体），
+      全部规则集中在文末 §7，且只命中 :root[data-material="liquid"]；
+      solid 与 glow 的规则（含本文件 §2 / §3 的 glow 分支）不做任何改动。
+   ============================================================ */
+
+/* ============================================================
+   1. 液态玻璃：通透、高光锐利、圆角更大、镜面边明显
+   ============================================================ */
+
+:root[data-material="liquid"]:not([data-theme="light"]),
+:root[data-material="liquid"] [data-ink="light"] {
+  --surface-1: rgba(12, 13, 18, 0.76);
+  --surface-2: rgba(255, 255, 255, 0.05);
+  --surface-3: rgba(255, 255, 255, 0.12);
+  --surface-inset: rgba(6, 7, 11, 0.28);
+
+  --border: rgba(255, 255, 255, 0.16);
+  --border-strong: rgba(255, 255, 255, 0.32);
+
+  --accent-soft: rgba(53, 132, 228, 0.22);
+  --track: rgba(255, 255, 255, 0.16);
+  --hover: rgba(255, 255, 255, 0.1);
+  --hover-strong: rgba(255, 255, 255, 0.18);
+
+  --topbar-bg: rgba(18, 20, 27, 0.68);
+  --topbar-border: rgba(255, 255, 255, 0.12);
+  --scrim: rgba(9, 10, 14, 0.66);
+
+  --shadow-panel: 0 22px 56px rgba(0, 0, 0, 0.52), 0 3px 12px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 10px 26px rgba(0, 0, 0, 0.36), 0 1px 4px rgba(0, 0, 0, 0.24);
+  --shadow-pop: 0 26px 64px rgba(0, 0, 0, 0.55), 0 4px 14px rgba(0, 0, 0, 0.28);
+
+  --radius-md: 12px;
+  --radius-lg: 17px;
+  --radius-xl: 24px;
+
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.55), inset 1px 0 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4), inset -1px 0 0 rgba(0, 0, 0, 0.18),
+    inset 0 0 0 1px rgba(150, 190, 255, 0.1), inset 3px 0 10px -4px rgba(140, 190, 255, 0.4),
+    inset -3px 0 10px -4px rgba(255, 170, 220, 0.3);
+  --glass-glow: 0 0 0 0 transparent;
+  --glass-sheen: radial-gradient(130% 100% at 8% -18%, rgba(255, 255, 255, 0.12), transparent 56%);
+  --glass-sweep: linear-gradient(
+    105deg,
+    transparent 44%,
+    rgba(255, 255, 255, 0.22) 50%,
+    transparent 56%
+  );
+  --glass-topline: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.62) 20%,
+    rgba(150, 190, 255, 0.65) 50%,
+    rgba(255, 255, 255, 0.62) 80%,
+    transparent
+  );
+  --glass-scrim: radial-gradient(120% 80% at 50% -10%, rgba(53, 132, 228, 0.16), transparent 62%);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --glass-panel-tint: rgba(12, 13, 18, 0.8);
+  --glass-pop-tint: rgba(34, 37, 48, 0.72);
+  --glass-noise-opacity: 0.045;
+  --glass-blur: 24px;
+
+  /* ---------- 液态玻璃 2.0 光学 token（暗色） ----------
+     玻璃体（::before）吃 --lg-tint / --lg-grade / --lg-backdrop；
+     镜面层（::after）吃 --lg-noise / --lg-specular / --lg-topline / --lg-rim；
+     投影与蓝玻璃由 --lg-shadow / --lg-accent-* 控制。
+     --lg-backdrop 由 JS 内联写在 .panel 上（url(data:image/jpeg;base64,...)），
+     缺省时用 --lg-grade 兜底，避免出现「没有底图就变黑板」的情况。 */
+  --lg-tint: rgba(255, 255, 255, 0.1); /* 玻璃体里的白色薄雾：把底图压成柔焦 */
+  --lg-grade: rgba(9, 11, 17, 0.72); /* 兜底色偏：无桌面取样时的可读性底线 */
+  --lg-backdrop: none; /* 桌面取样底图，默认无：JS 在 .panel 上内联覆盖成 url(data:image/jpeg;base64,...) */
+  --lg-accent-rgb: 0 122 255; /* 蓝玻璃：macOS 控制中心高亮磁贴 */
+  --lg-accent-alpha: 0.6;
+  --lg-blur: 30px; /* 只作用于玻璃体与弹层，文字永远不进滤镜 */
+  --lg-sat: 1.5;
+  --lg-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+  --lg-specular: radial-gradient(
+    120% 90% at 50% -20%,
+    rgba(255, 255, 255, 0.18),
+    rgba(255, 255, 255, 0) 60%
+  );
+  --lg-topline: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.55) 18%,
+    rgba(160, 200, 255, 0.45) 50%,
+    rgba(255, 255, 255, 0.55) 82%,
+    transparent
+  );
+  /* 镜面边：顶白 .8 / 底白 .2 / 左右白 .2–.28 + 底部 10px 内阴影做厚度 */
+  --lg-rim: inset 0 1px 1px rgba(255, 255, 255, 0.8), inset 0 -1px 1px rgba(255, 255, 255, 0.2),
+    inset 1px 0 1px rgba(255, 255, 255, 0.22), inset -1px 0 1px rgba(255, 255, 255, 0.28),
+    inset 0 -10px 24px -18px rgba(0, 0, 0, 0.35);
+  /* 投影：同色系三段（hsl 220 32% 10%），负 spread 收进窗口底部 44px 留白，绝不用纯黑 */
+  --lg-shadow: 0 26px 56px -18px hsl(220 32% 10% / 0.55),
+    0 10px 24px -12px hsl(220 32% 10% / 0.42), 0 2px 6px -1px hsl(220 32% 10% / 0.28);
+  --lg-shadow-pop: 0 18px 44px -14px hsl(220 32% 10% / 0.55),
+    0 6px 16px -10px hsl(220 32% 10% / 0.42), 0 1px 4px -1px hsl(220 32% 10% / 0.28);
+  /* 概览 / 应用中心的全屏 scrim：比 v0.4 略透，让取样底图能透出来一点 */
+  --lg-overlay-scrim: color-mix(in srgb, var(--scrim) 75%, transparent);
+  /* 边缘折射层：径向白光 + 内侧柔光（JS 注入的 .lg-edge span） */
+  --lg-edge-wash: radial-gradient(
+    120% 90% at 50% -20%,
+    rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0) 60%
+  );
+  --lg-edge-rim: inset 0 1px 1px rgba(255, 255, 255, 0.55),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.18), inset 0 0 24px -8px rgba(180, 210, 255, 0.35);
+  /* 无底图时的主题霞光（[data-glass="fallback"]） */
+  --lg-fallback-glow: radial-gradient(
+    130% 100% at 22% -12%,
+    rgba(96, 160, 255, 0.22),
+    rgba(96, 160, 255, 0) 58%
+  );
+  /* 内部控件发丝边（替代被去掉的 1px 实心 border，只加内高光不改尺寸） */
+  --lg-hairline: inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.14);
+  --lg-hairline-soft: inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --lg-hairline-hover: inset 0 0 0 1px rgba(255, 255, 255, 0.22),
+    inset 0 1px 1px rgba(255, 255, 255, 0.2);
+}
+
+:root[data-material="liquid"][data-theme="light"] {
+  /* 浅色玻璃不再铺大面积白底：表面/卡片只留很低的白色 alpha，壁纸要能透出来。
+     文字可读性由 [data-ink] 自适应衬底（深色壁纸 → 深色 token + 浅色字）承担。 */
+  --surface-1: rgba(252, 253, 255, 0.22);
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --surface-3: rgba(255, 255, 255, 0.1);
+  --surface-inset: rgba(232, 236, 246, 0.12);
+
+  --border: rgba(12, 16, 24, 0.12);
+  --border-strong: rgba(12, 16, 24, 0.22);
+
+  --accent-soft: rgba(28, 113, 216, 0.14);
+  --track: rgba(12, 16, 24, 0.14);
+  --hover: rgba(10, 14, 20, 0.05);
+  --hover-strong: rgba(10, 14, 20, 0.09);
+
+  --topbar-bg: rgba(252, 253, 255, 0.55);
+  --topbar-border: rgba(12, 16, 24, 0.08);
+  --scrim: rgba(238, 239, 243, 0.66);
+
+  --shadow-panel: 0 22px 56px rgba(30, 40, 70, 0.18), 0 3px 12px rgba(30, 40, 70, 0.1);
+  --shadow-card: 0 10px 26px rgba(30, 40, 70, 0.12), 0 1px 4px rgba(30, 40, 70, 0.06);
+  --shadow-pop: 0 26px 64px rgba(30, 40, 70, 0.2), 0 4px 14px rgba(30, 40, 70, 0.08);
+
+  --radius-md: 12px;
+  --radius-lg: 17px;
+  --radius-xl: 24px;
+
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 1), inset 1px 0 0 rgba(255, 255, 255, 0.8),
+    inset 0 -1px 0 rgba(16, 22, 34, 0.1), inset -1px 0 0 rgba(16, 22, 34, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.35), inset 3px 0 10px -4px rgba(120, 170, 255, 0.35),
+    inset -3px 0 10px -4px rgba(255, 170, 200, 0.28);
+  --glass-glow: 0 0 0 0 transparent;
+  --glass-sheen: radial-gradient(130% 100% at 8% -18%, rgba(255, 255, 255, 0.62), transparent 58%);
+  --glass-sweep: linear-gradient(
+    105deg,
+    transparent 44%,
+    rgba(255, 255, 255, 0.6) 50%,
+    transparent 56%
+  );
+  --glass-topline: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 1) 20%,
+    rgba(120, 160, 255, 0.55) 50%,
+    rgba(255, 255, 255, 1) 80%,
+    transparent
+  );
+  --glass-scrim: radial-gradient(120% 80% at 50% -10%, rgba(28, 113, 216, 0.1), transparent 62%);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.9), inset 0 -1px 0 rgba(12, 16, 24, 0.04);
+  --glass-panel-tint: rgba(252, 253, 255, 0.8);
+  --glass-pop-tint: rgba(255, 255, 255, 0.74);
+  --glass-noise-opacity: 0.03;
+  --glass-blur: 24px;
+
+  /* ---------- 液态玻璃 2.0 光学 token（亮色）：与暗色同一套语义，只换取值 ---------- */
+  --lg-tint: rgba(255, 255, 255, 0.04);
+  --lg-grade: rgba(250, 251, 255, 0.24);
+  --lg-backdrop: none;
+  --lg-accent-rgb: 0 122 255;
+  --lg-accent-alpha: 0.6;
+  --lg-blur: 30px;
+  --lg-sat: 1.5;
+  --lg-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+  --lg-specular: radial-gradient(
+    120% 90% at 50% -20%,
+    rgba(255, 255, 255, 0.72),
+    rgba(255, 255, 255, 0) 62%
+  );
+  --lg-topline: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.95) 18%,
+    rgba(120, 160, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0.95) 82%,
+    transparent
+  );
+  /* 亮色镜面边：顶部白 .9；底部白 .18 + 暗 .1；左右白 .6；再叠 10px 冷调内阴影；
+     最后一圈极淡的暗色 1px 内描边——白色壁纸上没有它，玻璃外轮廓会完全消失 */
+  --lg-rim: inset 0 1px 1px rgba(255, 255, 255, 0.9), inset 0 -1px 1px rgba(255, 255, 255, 0.18),
+    inset 1px 0 1px rgba(255, 255, 255, 0.7), inset -1px 0 1px rgba(255, 255, 255, 0.7),
+    inset 0 -1px 1px rgba(16, 22, 34, 0.1), inset 0 -10px 24px -18px rgba(16, 22, 34, 0.1),
+    inset 0 0 0 1px rgba(16, 22, 34, 0.06);
+  --lg-shadow: 0 26px 56px -18px hsl(220 30% 24% / 0.55),
+    0 10px 24px -12px hsl(220 30% 24% / 0.42), 0 2px 6px -1px hsl(220 30% 24% / 0.28);
+  --lg-shadow-pop: 0 18px 44px -14px hsl(220 30% 24% / 0.55),
+    0 6px 16px -10px hsl(220 30% 24% / 0.42), 0 1px 4px -1px hsl(220 30% 24% / 0.28);
+  --lg-overlay-scrim: color-mix(in srgb, var(--scrim) 75%, transparent);
+  --lg-edge-wash: radial-gradient(
+    120% 90% at 50% -20%,
+    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0) 62%
+  );
+  --lg-edge-rim: inset 0 1px 1px rgba(255, 255, 255, 0.85),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.25), inset 0 0 24px -8px rgba(160, 200, 255, 0.3);
+  --lg-fallback-glow: radial-gradient(
+    130% 100% at 22% -12%,
+    rgba(28, 113, 216, 0.14),
+    rgba(28, 113, 216, 0) 58%
+  );
+  --lg-hairline: inset 0 0 0 1px rgba(12, 16, 24, 0.1),
+    inset 0 1px 1px rgba(255, 255, 255, 0.55);
+  --lg-hairline-soft: inset 0 0 0 1px rgba(12, 16, 24, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  --lg-hairline-hover: inset 0 0 0 1px rgba(12, 16, 24, 0.18),
+    inset 0 1px 1px rgba(255, 255, 255, 0.65);
+}
+
+/* ============================================================
+   2. 柔光玻璃：弥散、低对比、暖调柔光，边缘几乎无硬线
+   ============================================================ */
+
+:root[data-material="glow"]:not([data-theme="light"]) {
+  --surface-1: rgba(38, 40, 52, 0.84);
+  --surface-2: rgba(255, 255, 255, 0.055);
+  --surface-3: rgba(255, 255, 255, 0.08);
+  --surface-inset: rgba(20, 21, 28, 0.34);
+
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.2);
+
+  --accent-soft: rgba(96, 140, 255, 0.2);
+  --track: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.08);
+  --hover-strong: rgba(255, 255, 255, 0.14);
+
+  --topbar-bg: rgba(38, 40, 52, 0.72);
+  --topbar-border: rgba(255, 255, 255, 0.08);
+  --scrim: rgba(12, 13, 18, 0.62);
+
+  --shadow-panel: 0 26px 64px rgba(0, 0, 0, 0.42), 0 2px 10px rgba(0, 0, 0, 0.24);
+  --shadow-card: 0 12px 30px rgba(0, 0, 0, 0.32), 0 1px 4px rgba(0, 0, 0, 0.2);
+  --shadow-pop: 0 28px 70px rgba(0, 0, 0, 0.46), 0 4px 16px rgba(0, 0, 0, 0.24);
+
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 -1px 0 rgba(0, 0, 0, 0.2);
+  --glass-glow: 0 0 72px rgba(130, 160, 255, 0.34), 0 0 26px rgba(255, 214, 190, 0.12);
+  --glass-sheen: radial-gradient(120% 100% at 50% -12%, rgba(255, 226, 205, 0.18), transparent 58%),
+    radial-gradient(90% 60% at 50% 108%, rgba(180, 200, 255, 0.12), transparent 62%);
+  --glass-sweep: none;
+  --glass-topline: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.18) 30%,
+    rgba(255, 214, 190, 0.3) 50%,
+    rgba(255, 255, 255, 0.18) 70%,
+    transparent
+  );
+  --glass-scrim: radial-gradient(90% 70% at 50% 0%, rgba(150, 170, 230, 0.16), transparent 65%);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --glass-panel-tint: rgba(38, 40, 52, 0.88);
+  --glass-pop-tint: rgba(46, 48, 62, 0.8);
+  --glass-noise-opacity: 0.014;
+  --glass-blur: 28px;
+}
+
+:root[data-material="glow"][data-theme="light"] {
+  --surface-1: rgba(255, 253, 250, 0.78);
+  --surface-2: rgba(255, 255, 255, 0.66);
+  --surface-3: rgba(255, 255, 255, 0.88);
+  --surface-inset: rgba(246, 244, 240, 0.62);
+
+  --border: rgba(28, 30, 44, 0.07);
+  --border-strong: rgba(28, 30, 44, 0.14);
+
+  --accent-soft: rgba(96, 140, 255, 0.14);
+  --track: rgba(20, 26, 40, 0.11);
+  --hover: rgba(10, 14, 20, 0.04);
+  --hover-strong: rgba(10, 14, 20, 0.075);
+
+  --topbar-bg: rgba(255, 253, 250, 0.72);
+  --topbar-border: rgba(28, 30, 44, 0.06);
+  --scrim: rgba(244, 242, 238, 0.7);
+
+  --shadow-panel: 0 24px 60px rgba(120, 120, 150, 0.16), 0 2px 10px rgba(120, 120, 150, 0.1);
+  --shadow-card: 0 12px 30px rgba(120, 120, 150, 0.12), 0 1px 4px rgba(120, 120, 150, 0.06);
+  --shadow-pop: 0 26px 64px rgba(120, 120, 150, 0.18), 0 4px 14px rgba(120, 120, 150, 0.08);
+
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 1), inset 0 -1px 0 rgba(28, 30, 44, 0.05);
+  --glass-glow: 0 0 70px rgba(255, 190, 150, 0.45), 0 18px 50px rgba(120, 110, 100, 0.12);
+  --glass-sheen: radial-gradient(120% 100% at 50% -12%, rgba(255, 236, 220, 0.42), transparent 60%),
+    radial-gradient(90% 60% at 50% 108%, rgba(200, 215, 255, 0.16), transparent 62%);
+  --glass-sweep: none;
+  --glass-topline: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.9) 30%,
+    rgba(255, 200, 170, 0.4) 50%,
+    rgba(255, 255, 255, 0.9) 70%,
+    transparent
+  );
+  --glass-scrim: radial-gradient(90% 70% at 50% 0%, rgba(255, 220, 190, 0.22), transparent 65%);
+  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  --glass-panel-tint: rgba(255, 253, 250, 0.9);
+  --glass-pop-tint: rgba(255, 253, 250, 0.88);
+  --glass-noise-opacity: 0.014;
+  --glass-blur: 28px;
+}
+
+/* ============================================================
+   3. 外壳：顶栏 / Dock / 面板外壳（控制中心 + 通知中心）/ 管理面板
+   ============================================================ */
+
+/* ---- 顶栏：屏幕满宽；只加霞光 + 镜面边，不加外阴影（贴着屏幕顶边） ---- */
+:root[data-material="liquid"] .topbar,
+:root[data-material="glow"] .topbar {
+  background-color: var(--topbar-bg);
+  background-image: var(--glass-sheen);
+  background-repeat: no-repeat;
+  border-bottom-color: var(--topbar-border);
+  box-shadow: var(--glass-rim);
+}
+
+/* ---- Dock：悬浮在桌面之上，霞光 + 外发光 + 镜面边 ---- */
+:root[data-material="liquid"] .dock,
+:root[data-material="glow"] .dock {
+  position: relative; /* 噪点 ::after 的定位基准（默认 static） */
+  background-color: var(--glass-bg);
+  background-image: var(--glass-sheen);
+  background-repeat: no-repeat;
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-card), var(--glass-glow), var(--glass-rim);
+}
+
+/* ---- 面板外壳（控制中心 / 通知中心）---- */
+:root[data-material="liquid"] .panel,
+:root[data-material="glow"] .panel {
+  background-color: var(--surface-1);
+  background-image: var(--glass-sheen);
+  background-repeat: no-repeat;
+  border-color: var(--border);
+  box-shadow: var(--shadow-panel), var(--glass-glow), var(--glass-rim);
+}
+
+/* ---- 面板顶部 1px 高光：从「发丝白线」升级为带强调色的镜面线 ---- */
+:root[data-material="liquid"] .panel::before,
+:root[data-material="glow"] .panel::before {
+  left: 0;
+  right: 0;
+  background: var(--glass-topline);
+}
+
+/* ---- 管理面板：长表单窗口，用更实的 tint 保证可读性 ---- */
+:root[data-material="liquid"] .mp-panel,
+:root[data-material="glow"] .mp-panel {
+  background-color: var(--glass-panel-tint);
+  background-image: var(--glass-sheen);
+  background-repeat: no-repeat;
+  border-color: var(--border);
+  box-shadow: var(--shadow-panel), var(--glass-glow), var(--glass-rim);
+}
+
+/* ---- 磨砂噪点：只铺在玻璃外壳上（成本可控），叠在内容之上但不拦截事件 ----
+   液态玻璃的 .panel 已升级为四层结构：噪点并入 §7 的镜面层 .panel::after，
+   不能再用这条「z-index:2 + mix-blend-mode:overlay」的旧噪点层（会盖住镜面边与文字）。
+   其余外壳与 glow 分支保持原样。 */
+:root[data-material="liquid"] :is(.topbar, .dock, .mp-panel)::after,
+:root[data-material="glow"] :is(.topbar, .dock, .panel, .mp-panel)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  background-image: var(--glass-noise);
+  background-size: 160px 160px;
+  opacity: var(--glass-noise-opacity);
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+/* ============================================================
+   4. 卡片 / 控件微调（只补内高光，颜色全部来自 token）
+   ============================================================ */
+
+:root[data-material="liquid"] :is(.ctl-card, .ntf-group, .mp-card),
+:root[data-material="glow"] :is(.ctl-card, .ntf-group, .mp-card) {
+  box-shadow: var(--glass-inner);
+}
+
+/* 选中态：液态玻璃给分段滑块加一圈柔和外发光（滑块本体在 motion.css 的 .seg-thumb） */
+:root[data-material="liquid"] .seg-thumb {
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 12px rgba(53, 132, 228, 0.28);
+}
+
+/* ============================================================
+   5. 弹层：同窗口内确有下层内容，可使用真实 backdrop-filter
+   （电源菜单 / 应用右键菜单 / Dock 与顶栏 tooltip）
+   ============================================================ */
+
+:root[data-material="liquid"] :is(.ctl-power-menu, .ac-menu, .ctx-menu, .tooltip),
+:root[data-material="glow"] :is(.ctl-power-menu, .ac-menu, .ctx-menu, .tooltip) {
+  background-color: var(--glass-pop-tint);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-pop), var(--glass-rim);
+}
+
+/* ---- 全屏遮罩（应用中心 / 活动概览）：压暗桌面时叠一层主题霞光 ---- */
+:root[data-material="liquid"] #backdrop,
+:root[data-material="glow"] #backdrop {
+  background-color: var(--scrim);
+  background-image: var(--glass-scrim);
+  background-repeat: no-repeat;
+}
+
+/* ============================================================
+   6. 动效：液态玻璃打开时一次性扫光（液态感的来源）
+   关闭 reduce-motion 时完全不参与，避免持续合成开销。
+   ============================================================ */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 面板入场沿用动效层的弹性 sheet-in（此处只叠加扫光）；退出动画交给 .panel-out */
+  :root[data-material="liquid"] .panel:not(.panel-out) {
+    background-image: var(--glass-sweep), var(--glass-sheen);
+    background-size: 200% 100%, 100% 100%;
+    background-repeat: no-repeat, no-repeat;
+    animation: sheet-in var(--dur-sheet) var(--ease-spring-soft),
+      liquid-sheen-sweep 820ms var(--ease) 60ms 1 both;
+  }
+
+  @keyframes liquid-sheen-sweep {
+    from {
+      background-position: -120% 0, 0 0;
+    }
+    to {
+      background-position: 220% 0, 0 0;
+    }
+  }
+}
+
+/* ============================================================
+   7. 液态玻璃 2.0：macOS 控制中心式光学分层（仅 liquid）
+
+   从「一层半透明表面 + 噪点」升级为四层（内容与文字永远不进滤镜）：
+
+     .panel::before   z-index:-3  玻璃体（inset:-40px）
+                        桌面取样底图 + 色偏 + 白色薄雾，blur(30px) saturate(1.5)
+     .panel::after    z-index:-2  镜面层（inset:0）
+                        噪点（自带 alpha）+ 顶部径向白光 + 1px 镜面线 + 镜面边
+     .panel .lg-edge  z-index:-1  边缘折射层（JS 注入的 span）
+                        径向高光 + 内侧柔光；.lg-refract 时接 SVG 位移滤镜
+     .panel           背景透明    —— 玻璃完全由上面三层合成，1px 实心边框取消
+
+   与旧规则的关系（都在本文件内，solid / glow 分支零改动）：
+   - §3 的 .panel / .panel::before：同优先级，本节在文件末尾 → 本节覆盖；
+     ::before 必须显式写 inset / width / height，否则 panels.css 的
+     top / left / right / height:1px 顶线会赢。
+   - §3 的磨砂噪点 ::after：已把 liquid .panel 从选择器里摘掉，否则它的
+     z-index:2 / opacity / mix-blend-mode:overlay 会盖住本节镜面层。
+   - §6 的入场扫光保留（画在 .panel 背景上，位于玻璃体之下），
+     本节 7.10 再给镜面层补一层真正可见的扫光。
+   ============================================================ */
+
+/* ---- 7.1 面板本体：去掉 1px 实心边框，玻璃体接管底色 ---- */
+:root[data-material="liquid"] .panel {
+  /* 边框让位给 ::after 的 inset 镜面边；padding 各 +1px 抵消被去掉的 1px 边框，
+     content-box 尺寸与 solid / glow 完全一致（不出滚动条、内容不位移） */
+  border: 0;
+  padding: calc(var(--space-3) + 1px) calc(var(--space-5) + 1px);
+  background: transparent;
+  box-shadow: var(--lg-shadow);
+}
+
+/* ---- 7.2 玻璃体：桌面取样底图 + 色偏 + 薄雾，模糊只在这里发生 ---- */
+:root[data-material="liquid"] .panel::before {
+  content: "";
+  position: absolute;
+  inset: -40px; /* 模糊溢出场：blur 30px 的边缘衰减落在面板外，被 overflow:hidden 裁掉 */
+  width: auto;
+  height: auto;
+  background-color: transparent;
+  background-image: linear-gradient(var(--lg-tint), var(--lg-tint)),
+    linear-gradient(var(--lg-grade), var(--lg-grade)), var(--lg-backdrop, none);
+  background-size: 100% 100%, 100% 100%, cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: blur(var(--lg-blur)) saturate(var(--lg-sat));
+  pointer-events: none;
+  z-index: -3;
+}
+
+/* ---- 7.3 镜面层：噪点 + 顶部白光 + 1px 镜面线 + 多重 inset 镜面边 ---- */
+:root[data-material="liquid"] .panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: inherit;
+  background-color: transparent;
+  background-image: var(--lg-noise), var(--lg-specular), var(--lg-topline);
+  background-size: 160px 160px, 100% 100%, 100% 1px;
+  background-position: center, center, center top;
+  background-repeat: repeat, no-repeat, no-repeat;
+  box-shadow: var(--lg-rim);
+  opacity: 1;
+  mix-blend-mode: normal;
+  pointer-events: none;
+}
+
+/* ---- 7.4 没有桌面取样时（[data-glass="fallback"]）：追加一层主题霞光 ----
+   保证「没有底图」也不会变成一块发灰的黑板：色偏 + 霞光 + 镜面边仍然成立。
+   data-glass 由 JS 写在 .panel 本身（不是 html / 祖先）上。 */
+:root[data-material="liquid"] .panel[data-glass="fallback"]::before {
+  background-image: linear-gradient(var(--lg-tint), var(--lg-tint)),
+    linear-gradient(var(--lg-grade), var(--lg-grade)), var(--lg-fallback-glow),
+    var(--lg-backdrop, none);
+  background-size: 100% 100%, 100% 100%, 100% 100%, cover;
+}
+
+/* ---- 7.5 边缘折射层（JS 注入 <span class="lg-edge">；未注入时自动降级） ---- */
+:root[data-material="liquid"] .panel .lg-edge {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: var(--lg-edge-wash);
+  box-shadow: var(--lg-edge-rim);
+}
+
+/* SVG 位移滤镜（#lg-refract / #lg-refract-edge 定义在 topbar.html 的 <svg class="lg-filters">；
+   缺一个就不加 .lg-refract）。文字节点不在滤镜内：::before 只承载底图，.lg-edge 是空 span。 */
+:root[data-material="liquid"] .panel.lg-refract .lg-edge {
+  filter: url(#lg-refract-edge);
+}
+
+@supports (filter: url(#lg-refract)) {
+  :root[data-material="liquid"] .panel.lg-refract::before {
+    filter: blur(var(--lg-blur)) saturate(var(--lg-sat)) url(#lg-refract);
+  }
+}
+
+/* ---- 7.6 截屏期间（.lg-wait）：隐藏面板，并清空动画 ----
+   必须用 animation:none（不是只 visibility）：移除类后入场动画与扫光会重新播放。 */
+:root[data-material="liquid"] .panel.lg-wait {
+  visibility: hidden;
+}
+
+:root[data-material="liquid"] .panel.lg-wait,
+:root[data-material="liquid"] .panel.lg-wait *,
+:root[data-material="liquid"] .panel.lg-wait::before,
+:root[data-material="liquid"] .panel.lg-wait::after {
+  animation: none !important;
+}
+
+/* ---- 7.7 内部控件：1px 实心边框 → 透明边 + inset 发丝高光（尺寸不变） ---- */
+:root[data-material="liquid"]
+  :is(.ctl-tile, .ctl-card, .ctl-seg, .ctl-multi-item, .ctl-switch, .ntf-group) {
+  border-color: transparent;
+}
+
+:root[data-material="liquid"]
+  :is(.ctl-tile, .ctl-card, .ctl-seg, .ctl-multi-item, .ctl-switch, .ntf-card) {
+  box-shadow: var(--lg-hairline);
+}
+
+/* 通知堆叠层：保留自己的 1px 投影，再叠发丝边 */
+:root[data-material="liquid"] .ntf-layer {
+  border-color: transparent;
+  box-shadow: var(--lg-hairline), 0 1px 3px color-mix(in srgb, var(--shadow-icon) 55%, transparent);
+}
+
+/* hover：用更亮的发丝边替代旧的 border-color:--border-strong（否则 hover 没有反馈） */
+:root[data-material="liquid"] .ctl-tile:hover,
+:root[data-material="liquid"] .ntf-card:hover {
+  border-color: transparent;
+  box-shadow: var(--lg-hairline-hover);
+}
+
+/* ---- 7.8 蓝玻璃开启态：accent 半透明玻璃 + 顶部高光，不是纯蓝块 ---- */
+:root[data-material="liquid"] .ctl-tile.on {
+  --tile-ico-bg: rgba(255, 255, 255, 0.2);
+  background-color: rgb(var(--lg-accent-rgb) / var(--lg-accent-alpha));
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 46%);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 -1px 1px rgba(0, 0, 0, 0.18),
+    0 4px 12px -4px rgba(0, 80, 200, 0.35);
+}
+
+:root[data-material="liquid"] .ctl-tile.on:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.62), inset 0 -1px 1px rgba(0, 0, 0, 0.18),
+    0 6px 16px -6px rgba(0, 80, 200, 0.42);
+}
+
+/* 开启态图标泡：白色半透明 + 顶部高光；悬停时叠 2px 白环 */
+:root[data-material="liquid"] .ctl-tile.on .ctl-tile-ico {
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 -1px 1px rgba(0, 0, 0, 0.12);
+}
+
+:root[data-material="liquid"] .ctl-tile.on .ctl-tile-toggle:hover .ctl-tile-ico {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.55),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.12);
+}
+
+/* 焦点环：上面的 inset 高光优先级更高，这里把 2px 内环补回来 */
+:root[data-material="liquid"] .ctl-tile-solo:focus-visible {
+  box-shadow: var(--lg-hairline), inset 0 0 0 2px var(--accent);
+}
+
+:root[data-material="liquid"] .ctl-tile-solo.on:focus-visible {
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 0 0 2px var(--on-accent),
+    0 4px 12px -4px rgba(0, 80, 200, 0.35);
+}
+
+/* 开关同款蓝玻璃（滑块 ::after 保持纯白，动效层不改） */
+:root[data-material="liquid"] .ctl-switch.on {
+  background-color: rgb(var(--lg-accent-rgb) / var(--lg-accent-alpha));
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0) 52%);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 -1px 1px rgba(0, 0, 0, 0.18),
+    0 2px 8px -3px rgba(0, 80, 200, 0.35);
+}
+
+/* 底部动作按钮：软发丝边（hover 只换底色） */
+:root[data-material="liquid"] .ctl-action {
+  border-color: transparent;
+  box-shadow: var(--lg-hairline-soft);
+}
+
+/* ---- 7.9 弹层：真实 backdrop-filter（同窗口内确有下层内容） + 镜面边 ---- */
+:root[data-material="liquid"] :is(.ctl-power-menu, .ac-menu, .ctx-menu, .tooltip) {
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(1.5);
+  backdrop-filter: blur(var(--lg-blur)) saturate(1.5);
+  border-color: transparent;
+  box-shadow: var(--lg-rim), var(--lg-shadow-pop);
+}
+
+/* ---- 7.10 入场扫光：画在镜面层上（玻璃体盖住了 §6 画在 .panel 背景上的那层） ---- */
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-material="liquid"] .panel:not(.panel-out)::after {
+    background-image: var(--glass-sweep), var(--lg-noise), var(--lg-specular), var(--lg-topline);
+    background-size: 200% 100%, 160px 160px, 100% 100%, 100% 1px;
+    background-repeat: no-repeat, repeat, no-repeat, no-repeat;
+    background-position: -120% 0, 0 0, center, center top;
+    animation: lg-sheen-sweep 820ms var(--ease) 60ms 1 both;
+  }
+
+  @keyframes lg-sheen-sweep {
+    from {
+      background-position: -120% 0, 0 0, center, center top;
+    }
+    to {
+      background-position: 220% 0, 0 0, center, center top;
+    }
+  }
+}
+
+/* ============================================================
+   8. 液态玻璃 2.0：全部表面（顶栏 / Dock / 管理面板 / 概览 / 应用中心）
+
+   这些窗口的取样由 Rust 在 show 之前完成（window_backdrop + surface_backdrops），
+   前端把 dataUrl 写成 --lg-backdrop。本节的四层结构与 .panel 同源：
+     玻璃体 ::before（tint + grade + 取样图，blur/saturate）
+     镜面层 ::after（噪点 + specular + 1px 镜面线 + 多重 inset rim）
+     边缘折射 .lg-edge（Dock / 管理面板，JS 注入）
+     同色系投影（--lg-shadow，来自该表面取样图的平均色）
+
+   模糊半径按表面厚度调整：32px 顶栏 18px、Dock 24px、管理面板/全屏 30px。
+   裁切方式：
+   - 顶栏用 clip-path 裁到 32px（不能用 overflow:hidden，否则按钮焦点环被切掉）
+   - Dock 用 clip-path 圆角裁到玻璃条（图标放大发生在内容层，不受影响）
+   - 管理面板由 .mp-panel 自身的 overflow:hidden 裁到圆角
+   - 概览 / 应用中心的取样图铺在 #backdrop 的 scrim 之下
+   ============================================================ */
+
+/* ---- 8.1 条状 / 面板状表面：去实底、去边框，只留四层 ---- */
+
+:root[data-material="liquid"] .lg-topbar,
+:root[data-material="liquid"] .lg-dock,
+:root[data-material="liquid"] .lg-manager {
+  isolation: isolate; /* 负 z 层只在本表面内堆叠 */
+  background: transparent;
+  border-color: transparent;
+  box-shadow: var(--lg-shadow);
+}
+
+:root[data-material="liquid"] .lg-dock,
+:root[data-material="liquid"] .lg-manager {
+  position: relative; /* ::before/::after 的定位基准（顶栏本身是 fixed，保持不动） */
+}
+
+/* 切到 liquid 时补截底片：表面先不可见（窗口透明，截到的是桌面），截完移除 */
+:root[data-material="liquid"] .lg-surface.lg-wait {
+  visibility: hidden;
+  animation: none !important;
+}
+
+/* 深色墨分支：表面自身与“没有显式 color”的继承文本也切到浅色 */
+:root[data-material="liquid"] [data-ink="light"] {
+  color: var(--text);
+}
+
+:root[data-material="liquid"] .lg-topbar {
+  --lg-blur: 18px;
+  border: 0;
+  padding-bottom: 1px; /* 抵消被去掉的 1px border-bottom，内容盒高度不变 */
+  box-shadow: none; /* 贴着屏幕顶边，不加外阴影 */
+}
+
+:root[data-material="liquid"] .lg-dock {
+  --lg-blur: 24px;
+  border: 0;
+  padding: calc(var(--space-2) + 1px); /* 抵消 1px border，条的外尺寸不变 */
+}
+
+:root[data-material="liquid"] .lg-manager {
+  --lg-blur: 30px;
+  border: 0;
+}
+
+/* 玻璃体 */
+:root[data-material="liquid"] .lg-topbar::before,
+:root[data-material="liquid"] .lg-dock::before,
+:root[data-material="liquid"] .lg-manager::before {
+  content: "";
+  position: absolute;
+  inset: -40px; /* 模糊溢出场，裁切后边缘仍取到完整模糊结果 */
+  z-index: -3;
+  background-color: transparent;
+  background-image: linear-gradient(var(--lg-tint), var(--lg-tint)),
+    linear-gradient(var(--lg-grade), var(--lg-grade)), var(--lg-backdrop, none);
+  background-size: 100% 100%, 100% 100%, cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: blur(var(--lg-blur)) saturate(var(--lg-sat));
+  pointer-events: none;
+}
+
+/* 顶栏：只裁到 32px 条，不裁圆角 */
+:root[data-material="liquid"] .lg-topbar::before {
+  clip-path: inset(40px);
+}
+
+/* Dock：裁到圆角玻璃条 */
+:root[data-material="liquid"] .lg-dock::before {
+  clip-path: inset(40px round var(--radius-xl));
+}
+
+:root[data-material="liquid"] .lg-manager::before {
+  border-radius: inherit;
+}
+
+/* 镜面层：噪点 + 顶部白光 + 1px 镜面线 + 多重 inset 镜面边 */
+:root[data-material="liquid"] .lg-topbar::after,
+:root[data-material="liquid"] .lg-dock::after,
+:root[data-material="liquid"] .lg-manager::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  border-radius: inherit;
+  background-color: transparent;
+  background-image: var(--lg-noise), var(--lg-specular), var(--lg-topline);
+  background-size: 160px 160px, 100% 100%, 100% 1px;
+  background-position: center, center, center top;
+  background-repeat: repeat, no-repeat, no-repeat;
+  box-shadow: var(--lg-rim);
+  opacity: 1;
+  mix-blend-mode: normal;
+  pointer-events: none;
+}
+
+/* 没有取样时：加一层主题霞光，避免变成一块纯灰板 */
+:root[data-material="liquid"] .lg-topbar[data-glass="fallback"]::before,
+:root[data-material="liquid"] .lg-dock[data-glass="fallback"]::before,
+:root[data-material="liquid"] .lg-manager[data-glass="fallback"]::before {
+  background-image: linear-gradient(var(--lg-tint), var(--lg-tint)),
+    linear-gradient(var(--lg-grade), var(--lg-grade)), var(--lg-fallback-glow),
+    var(--lg-backdrop, none);
+  background-size: 100% 100%, 100% 100%, 100% 100%, cover;
+}
+
+/* 边缘折射层（Dock / 管理面板；顶栏太薄，不注入） */
+:root[data-material="liquid"] .lg-surface .lg-edge {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: var(--lg-edge-wash);
+  box-shadow: var(--lg-edge-rim);
+}
+
+:root[data-material="liquid"] .lg-surface.lg-refract .lg-edge {
+  filter: url(#lg-refract-edge);
+}
+
+@supports (filter: url(#lg-refract)) {
+  :root[data-material="liquid"] .lg-surface.lg-refract::before {
+    filter: blur(var(--lg-blur)) saturate(var(--lg-sat)) url(#lg-refract);
+  }
+}
+
+/* ---- 8.2 全屏概览 / 应用中心：取样图铺在 scrim 之下 ---- */
+
+:root[data-material="liquid"] #backdrop.lg-overlay {
+  isolation: isolate;
+  background: transparent;
+}
+
+:root[data-material="liquid"] #backdrop.lg-overlay::before {
+  content: "";
+  position: fixed;
+  inset: -40px;
+  z-index: -3;
+  background-color: transparent;
+  background-image: linear-gradient(var(--lg-tint), var(--lg-tint)),
+    var(--lg-backdrop, none);
+  background-size: 100% 100%, cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: blur(var(--lg-blur)) saturate(var(--lg-sat));
+  pointer-events: none;
+}
+
+:root[data-material="liquid"] #backdrop.lg-overlay::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background-color: var(--lg-overlay-scrim);
+  background-image: var(--lg-noise);
+  background-size: 160px 160px;
+  pointer-events: none;
+}
+
+/* 概览卡片 / 应用中心搜索条：低 alpha 玻璃 + 发丝边 + 同色系投影 */
+:root[data-material="liquid"] #backdrop.lg-overlay .card,
+:root[data-material="liquid"] #backdrop.lg-overlay .ac-searchbar {
+  border-color: transparent;
+  box-shadow: var(--lg-shadow), var(--lg-hairline);
+}
+
+:root[data-material="liquid"] #backdrop.lg-overlay .card {
+  background-color: var(--surface-2);
+}
+
+:root[data-material="liquid"] #backdrop.lg-overlay .card:hover {
+  border-color: transparent;
+  outline-color: transparent;
+  box-shadow: var(--lg-shadow), var(--lg-hairline-hover);
+}
+
+:root[data-material="liquid"] #backdrop.lg-overlay .ac-searchbar {
+  background-color: var(--surface-2);
+}
+
+/* ---- 8.3 管理面板内部：卡片发丝边 + 开关蓝玻璃 ---- */
+
+:root[data-material="liquid"] .lg-manager .mp-card {
+  border-color: transparent;
+  box-shadow: var(--lg-hairline);
+}
+
+:root[data-material="liquid"] .lg-manager .mp-switch input:checked + .mp-switch-track {
+  background-color: rgb(var(--lg-accent-rgb) / var(--lg-accent-alpha));
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0) 55%);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 -1px 1px rgba(0, 0, 0, 0.18);
+}
+
+/* ---- 8.4 滤镜宿主（glass.js 注入；顶栏页为内联） ---- */
+svg.lg-filters {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 边缘层的基础定位：非 liquid 材质下也保持绝对定位，
+   避免空 <span class="lg-edge"> 作为 flex 项参与布局（切换材质时不跳一下） */
+.lg-edge {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+}

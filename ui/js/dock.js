@@ -1,3 +1,6 @@
+import "./theme.js";
+import "./cursor-glow.js";
+import "./glass.js";
 import { invoke, invokeRetry, listen, escapeHtml, basename } from "./api.js";
 
 let config = { pinned: [] };
@@ -11,6 +14,30 @@ const tooltipEl = document.getElementById("tooltip");
 const menuEl = document.getElementById("menu");
 
 const LETTER_COLORS = ["#3584e4", "#e66100", "#2ec27e", "#9141ac", "#e01b24", "#1c71d8", "#8f4e2b"];
+
+/// 智能隐藏（窗口遮挡）状态由后端判定：这里只负责渲染。
+/// 与 fullscreen 的 body.fs-hidden 分开，二者可以叠加（全屏 + 遮挡）。
+///
+/// 注意：body 上的全屏状态**不能**用 `.hidden`——`shared.css` 里的全局工具类
+/// `.hidden { display:none !important }` 会命中 body，整页失去布局：`syncSize()`
+/// 量到 0×0 → `resize_dock(20, 14)` 把 Dock 窗口真的缩成屏幕底部一个小方块，
+/// 退出全屏（微信截屏 Alt+A / 视频全屏）后也不会自己恢复。
+function applyAutoHidden(on) {
+  document.body.classList.toggle("auto-hidden", !!on);
+  if (on) {
+    tooltipEl.classList.add("hidden");
+    menuEl.classList.add("hidden");
+  }
+}
+
+async function syncAutoHidden() {
+  try {
+    applyAutoHidden(await invoke("get_dock_autohide_state"));
+  } catch (e) {
+    /* 命令尚未就绪时忽略，后续事件会补上 */
+  }
+}
+
 
 async function init() {
   config = await invokeRetry("get_config").catch(() => config);
@@ -32,9 +59,32 @@ async function init() {
     render();
   });
   listen("fullscreen-changed", (e) => {
-    document.body.classList.toggle("hidden", e.payload === true);
+    const hidden = e.payload === true;
+    document.body.classList.toggle("fs-hidden", hidden);
+    // 退出全屏后强制重量一次：全屏期间 `windows-changed` 仍会触发 render→syncSize，
+    // 这里作为兜底把任何被算错的窗口尺寸立刻纠正回来。
+    if (!hidden) syncSize(true);
   });
-  // 工作线程补全图标后刷新（去抖，避免逐图标重渲染）
+  listen("dock-autohide-changed", (e) => {
+    applyAutoHidden(e.payload === true);
+  });
+  // 重新显示 Dock（例如运行时开启副屏 Dock）时补一次全屏/智能隐藏状态
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState !== "visible") return;
+    let hidden = false;
+    try {
+      hidden = !!(await invoke("get_fullscreen_state"));
+    } catch (e) {
+      /* 命令尚未就绪时忽略 */
+    }
+    document.body.classList.toggle("fs-hidden", hidden);
+    if (!hidden) syncSize(true);
+    await syncAutoHidden();
+  });
+  // 工作区底边变化（任务栏隐身接管/还原、显示设置变化）→ 强制重新贴边
+  listen("workarea-changed", () => {
+    syncSize(true);
+  });  // 工作线程补全图标后刷新（去抖，避免逐图标重渲染）
   let iconReadyTimer = null;
   listen("icon-ready", () => {
     if (iconReadyTimer) return;
@@ -164,7 +214,7 @@ function render() {
         suppressClick = false;
         return;
       }
-      onItemClick(item);
+      onItemClick(item, el);
     });
     el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -180,9 +230,26 @@ function render() {
   syncSize();
 }
 
-async function onItemClick(item) {
+/**
+ * 启动弹跳（macOS 手感）：只给「启动新进程」的点击加一次 620ms 弹跳，
+ * 切换已有窗口不弹（避免误以为在启动）。动画见 motion.css 的 .dock-item.launching。
+ */
+function bounceDockItem(el) {
+  if (!el || !el.classList) return;
+  el.classList.remove("launching");
+  void el.offsetWidth; // 强制重排，连点也能重播
+  el.classList.add("launching");
+  if (el._bounceTimer) clearTimeout(el._bounceTimer);
+  el._bounceTimer = setTimeout(() => {
+    el._bounceTimer = null;
+    el.classList.remove("launching");
+  }, 640);
+}
+
+async function onItemClick(item, el) {
   if (!item) return;
   if (!item.wins.length) {
+    bounceDockItem(el);
     try {
       await invoke("launch_app", { path: item.path, args: item.args });
     } catch (err) {
@@ -422,16 +489,24 @@ async function commitOrder(d) {
 
 // ---------- 尺寸同步 ----------
 let lastW = 0, lastH = 0;
-function syncSize() {
+/// 窗口最小尺寸（逻辑像素）：只有九点格按钮时内容也 ≈82×70。
+/// 低于这个值一定是布局还没就绪（display:none / 首帧空文档），不能拿去 resize。
+const MIN_SIZE = { w: 60, h: 40 };
+
+function syncSize(force) {
   const dockEl = document.getElementById("dock");
+  if (!dockEl) return Promise.resolve();
+  // 页面不在布局状态时（body 被 display:none / 尚未渲染）所有尺寸都是 0。
+  // 用 0 调 resize_dock 会把 Dock 真窗口缩成 20×14 的条，见文件顶部注释。
+  if (dockEl.getClientRects().length === 0) return Promise.resolve();
   // scrollWidth 能量出超出窗口的真实内容宽度（offsetWidth 会被窗口宽度卡住导致死锁）
   const w = Math.ceil(dockEl.scrollWidth) + 20;
   const h = Math.ceil(dockEl.offsetHeight) + 14; // 顶部余量给 tooltip
-  if (Math.abs(w - lastW) >= 4 || Math.abs(h - lastH) >= 2) {
-    lastW = w;
-    lastH = h;
-    invoke("resize_dock", { width: w, height: h }).catch(() => {});
-  }
+  if (w < MIN_SIZE.w || h < MIN_SIZE.h) return Promise.resolve(); // 布局异常：保持原尺寸
+  if (!force && Math.abs(w - lastW) < 4 && Math.abs(h - lastH) < 2) return Promise.resolve();
+  lastW = w;
+  lastH = h;
+  return invoke("resize_dock", { width: w, height: h }).catch(() => {});
 }
 
 document.getElementById("grid").addEventListener("click", () => {
@@ -500,6 +575,32 @@ async function main() {
   await waitTauri(10000);
   setStage("Tauri 就绪，初始化…");
   await init();
+  // 首帧：先把窗口尺寸/位置校正到真实内容值，再显示。
+  // （窗口初始是隐藏的，避免刚打开时出现 900px 占位条 / 旧工作区底部位置）
+  await syncSize(true);
+  await syncAutoHidden();
+  await invoke("show_dock").catch(() => {});
+  // Dock 的窗口级取样可能早于最终尺寸/位置或失败；通知液态玻璃层在真正
+  // 显示后用 glass_backdrop 补一张（隐藏条 ~30ms，窗口透明，截到桌面）。
+  window.dispatchEvent(new CustomEvent("easydash:dock-shown"));
+  // 窗口 show 是真异步的：再补一次，避免首帧以错误状态出现
+  await syncAutoHidden();
+  // 新创建的 Dock 可能错过全屏状态事件：主动取一次当前屏幕的全屏状态
+  try {
+    if (await invoke("get_fullscreen_state")) {
+      document.body.classList.add("fs-hidden");
+    }
+  } catch (e) {
+    /* 启动早期命令可能尚未就绪 */
+  }
+  // 兜底：图标/字体晚到时再量两次；尺寸不变时 resize_dock 不会重复执行，
+  // 但工作区可能在启动后变化（任务栏接管），所以强制量一次贴边
+  setTimeout(() => {
+    syncSize(true);
+  }, 300);
+  setTimeout(() => {
+    syncSize(true);
+  }, 1200);
   startHb();
   if (stageEl) {
     stageEl.remove();
@@ -517,4 +618,8 @@ async function main() {
   }, 8000);
 }
 
-main().catch((e) => setStage("Dock 启动失败: " + (e.message || e), true));
+main().catch((e) => {
+  setStage("Dock 启动失败: " + (e.message || e), true);
+  // 初始化失败也要把窗口显示出来，否则用户看不到任何提示
+  invoke("show_dock").catch(() => {});
+});

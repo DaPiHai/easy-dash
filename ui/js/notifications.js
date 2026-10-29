@@ -1,9 +1,11 @@
 // 通知中心面板（双栏）：左栏大时钟 + 日期 + 应用分组（堆叠卡片）通知列表；
 // 右栏中文月历 + 媒体卡；底部通栏「清除全部 / 在系统通知中心打开」。
 // 只在配置 notificationCenter 为 true 时由 topbar.js 调 setEnabled(true) 启动拉取。
+// 样式前缀 ntf- / cal- / med-（见 ui/css/panels.css）。
 import { invoke, invokeRetry, listen, escapeHtml } from "./api.js";
 import { renderCalendar, todayInfo, shiftView } from "./calendar.js";
 import { createMediaCard } from "./media.js";
+import { icon } from "./icons.js";
 
 /** localStorage：上次打开面板时看到的最大通知时间戳（毫秒） */
 const LAST_SEEN_KEY = "easydash.lastSeen";
@@ -13,33 +15,64 @@ const HIDDEN_KEY = "easydash.hiddenNotifications";
 const LETTER_COLORS = ["#3584e4", "#e66100", "#2ec27e", "#9141ac", "#e01b24", "#1c71d8", "#8f4e2b"];
 const WEEKDAY_CN = ["日", "一", "二", "三", "四", "五", "六"];
 
+/** 空态 / 失败态（图标 + 文案） */
+function emptyHtml(text) {
+  return (
+    '<div class="ntf-empty">' +
+    '<span class="ntf-empty-ico">' +
+    icon("bellOff", { size: 48 }) +
+    "</span>" +
+    '<span class="ntf-empty-text">' +
+    escapeHtml(text) +
+    "</span>" +
+    "</div>"
+  );
+}
+
+/** Tauri 错误对象/字符串 → 可展示文本 */
+function errText(e) {
+  if (typeof e === "string") return e;
+  if (e && typeof e.message === "string") return e.message;
+  try {
+    return String(e);
+  } catch (_) {
+    return "未知错误";
+  }
+}
+
 // 面板骨架（内容由本模块填充；不依赖 topbar.html 里的静态结构）
 const PANEL_HTML = `
-  <div class="np-cols">
-    <div class="np-left">
-      <div class="np-head">
-        <div class="np-clock" id="np-clock">--:--</div>
-        <div class="np-date" id="np-date"></div>
+  <div class="ntf-cols">
+    <div class="ntf-left">
+      <div class="ntf-head">
+        <div class="ntf-clock" id="ntf-clock">--:--</div>
+        <div class="ntf-date" id="ntf-date"></div>
       </div>
-      <div class="np-list" id="np-list"><div class="np-empty">没有通知</div></div>
+      <div class="ntf-list" id="ntf-list">${emptyHtml("没有通知")}</div>
     </div>
-    <div class="np-right">
-      <div class="cal" id="np-calendar"></div>
-      <div class="np-media" id="np-media"></div>
+    <div class="ntf-right">
+      <div class="ntf-cal" id="ntf-calendar"></div>
+      <div class="ntf-media" id="ntf-media"></div>
     </div>
   </div>
-  <div class="np-actions">
-    <button class="panel-btn" id="np-clear" type="button">清除全部</button>
-    <button class="panel-btn" id="np-open-sys" type="button">在系统通知中心打开</button>
+  <div class="ntf-error hidden" id="ntf-error"></div>
+  <div class="ntf-actions">
+    <button class="ntf-action" id="ntf-clear" type="button">
+      <span class="ntf-action-ico">${icon("trash", { size: 14 })}</span>清除全部
+    </button>
+    <button class="ntf-action" id="ntf-open-sys" type="button">
+      <span class="ntf-action-ico">${icon("externalLink", { size: 14 })}</span>在系统通知中心打开
+    </button>
   </div>
 `;
 
 /**
  * 创建通知中心面板控制器。
- * @param {{onUnreadChange?: (hasUnread: boolean) => void}} opts
- * @returns {{onOpen: Function, onClose: Function, setEnabled: Function, isEnabled: Function}}
+ * @param {{onUnreadChange?: (hasUnread: boolean) => void,
+ *          onOpenApp?: () => void}} opts
+ *   onOpenApp：成功打开来源应用后回调（顶栏用它收起面板）
  */
-export function createNotificationsPanel({ onUnreadChange } = {}) {
+export function createNotificationsPanel({ onUnreadChange, onOpenApp } = {}) {
   const el = document.getElementById("panel-notifications");
 
   let items = []; // 后端返回的原始列表（按时间倒序）
@@ -47,6 +80,7 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
   let groups = []; // 按 appKey 分组后的列表（组内倒序，组间按 maxTs 倒序）
   const expanded = new Set(); // 已展开的 appKey
   let lastSeen = readLastSeen();
+  let unreadBaseline = lastSeen; // 本次打开时的已读水位：组内最新时间超过它 → 显示未读点
   let enabled = false;
   let panelOpen = false;
   let loadFailed = false;
@@ -57,29 +91,35 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
   let listening = false;
   let media = null;
   const notifyUnread = typeof onUnreadChange === "function" ? onUnreadChange : () => {};
+  const notifyOpenApp = typeof onOpenApp === "function" ? onOpenApp : () => {};
 
   // DOM 引用：必须等 innerHTML 落地后再取，否则全是 null
   let clockEl = null;
   let dateEl = null;
   let calEl = null;
   let listEl = null;
+  let errEl = null;
+  let errorTimer = null;
+  let enterTimer = null; // 入场错峰动画的收尾计时器
+  let openingKey = ""; // 防连点：正在打开的应用分组
 
   if (el) {
     el.innerHTML = PANEL_HTML;
-    clockEl = document.getElementById("np-clock");
-    dateEl = document.getElementById("np-date");
-    calEl = document.getElementById("np-calendar");
-    listEl = document.getElementById("np-list");
+    clockEl = document.getElementById("ntf-clock");
+    dateEl = document.getElementById("ntf-date");
+    calEl = document.getElementById("ntf-calendar");
+    listEl = document.getElementById("ntf-list");
+    errEl = document.getElementById("ntf-error");
     // 右栏媒体卡（自己管 start/stop）
-    media = createMediaCard(document.getElementById("np-media"));
+    media = createMediaCard(document.getElementById("ntf-media"));
     bindDom();
   }
 
   // ---------- DOM 绑定 ----------
 
   function bindDom() {
-    const clear = document.getElementById("np-clear");
-    const sys = document.getElementById("np-open-sys");
+    const clear = document.getElementById("ntf-clear");
+    const sys = document.getElementById("ntf-open-sys");
 
     if (calEl) {
       calEl.addEventListener("click", (e) => {
@@ -102,16 +142,35 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
       });
     }
     if (listEl) {
-      // 应用分组：点卡片展开 / 收起该应用的全部通知
+      // 应用分组：
+      // - 点右上角「打开应用」/ 应用图标 / 展开后的单条通知 → 进入来源应用；
+      // - 点卡片其余区域 → 展开 / 收起该应用的全部通知。
       listEl.addEventListener("click", (e) => {
-        const card = e.target.closest ? e.target.closest(".ng-card") : null;
+        const groupEl = e.target.closest ? e.target.closest(".ntf-group") : null;
+        if (!groupEl) return;
+        const key = groupEl.dataset.key || "";
+        const wantsOpen =
+          e.target.closest(".ntf-open-app") ||
+          e.target.closest(".ntf-icon") ||
+          e.target.closest(".ntf-item");
+        if (wantsOpen && groupEl.classList.contains("has-launch")) {
+          openApp(key);
+          return;
+        }
+        const card = e.target.closest(".ntf-card");
         if (!card) return;
-        const wrap = card.closest(".ng");
-        if (!wrap) return;
-        const key = wrap.dataset.key || "";
         if (expanded.has(key)) expanded.delete(key);
         else expanded.add(key);
         renderList();
+      });
+      // 键盘：展开后的单条通知可用 Enter / Space 打开应用
+      listEl.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const item = e.target.closest ? e.target.closest(".ntf-item-clickable") : null;
+        if (!item) return;
+        e.preventDefault();
+        const groupEl = item.closest(".ntf-group");
+        if (groupEl) openApp(groupEl.dataset.key || "");
       });
     }
   }
@@ -205,7 +264,7 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
     return max;
   }
 
-  /** 打开面板即视为已读 */
+  /** 打开面板即视为已读（未读点水位取打开前的值，供本次会话标记「新」） */
   function markSeen() {
     const ts = latestTs(items);
     if (ts > lastSeen) {
@@ -224,7 +283,7 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
       const key = String(n.appKey || n.appName || "system");
       let g = map.get(key);
       if (!g) {
-        g = { key, appName: String(n.appName || "系统"), icon: null, maxTs: 0, items: [] };
+        g = { key, appName: String(n.appName || "系统"), icon: null, launch: null, maxTs: 0, items: [] };
         map.set(key, g);
       }
       g.items.push(n);
@@ -236,6 +295,9 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
       g.items.sort((a, b) => (Number(b.tsMs) || 0) - (Number(a.tsMs) || 0));
       const withIcon = g.items.find((it) => it.appIcon);
       g.icon = withIcon ? String(withIcon.appIcon) : null;
+      // 启动目标：同一应用的通知处理器相同，取任意一条有 launch 的即可
+      const withLaunch = g.items.find((it) => it.launch);
+      g.launch = withLaunch ? String(withLaunch.launch) : null;
     }
     out.sort((a, b) => b.maxTs - a.maxTs);
     return out;
@@ -250,9 +312,7 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
     if (!groups.length) {
       // 读取失败与真正的空态给不同文案
       listEl.innerHTML =
-        loadFailed && !items.length
-          ? '<div class="np-empty">无法读取系统通知历史</div>'
-          : '<div class="np-empty">没有通知</div>';
+        loadFailed && !items.length ? emptyHtml("无法读取系统通知历史") : emptyHtml("没有通知");
       listEl.scrollTop = 0;
       return;
     }
@@ -266,7 +326,7 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
     if (group.icon) return '<img src="' + escapeHtml(group.icon) + '" alt="">';
     const letter = escapeHtml((group.appName.slice(0, 1) || "?").toUpperCase());
     return (
-      '<span class="ng-letter" style="background:' +
+      '<span class="ntf-letter" style="background:' +
       LETTER_COLORS[index % LETTER_COLORS.length] +
       '">' +
       letter +
@@ -277,49 +337,83 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
   function groupHtml(group, index) {
     const isOpen = expanded.has(group.key);
     const newest = group.items[0] || {};
+    const isUnread = group.maxTs > unreadBaseline;
+    const launchable = !!group.launch;
+    const appLabel = escapeHtml(group.appName);
     // 背后最多两层堆叠（条数 =2 一层，≥3 两层）
     const layers = group.items.length >= 3 ? 2 : group.items.length === 2 ? 1 : 0;
     let stack = "";
-    if (layers >= 1) stack += '<span class="ng-layer ng-layer-1"></span>';
-    if (layers >= 2) stack += '<span class="ng-layer ng-layer-2"></span>';
+    if (layers >= 1) stack += '<span class="ntf-layer ntf-layer-1"></span>';
+    if (layers >= 2) stack += '<span class="ntf-layer ntf-layer-2"></span>';
 
     const meta =
-      '<span class="ng-meta">' +
-      '<span class="ng-app">' + escapeHtml(group.appName) + "</span>" +
-      (group.items.length > 1 ? '<span class="ng-count">' + group.items.length + "</span>" : "") +
-      '<span class="ng-time">' + escapeHtml(relTime(newest.tsMs)) + "</span>" +
+      '<span class="ntf-meta">' +
+      '<span class="ntf-app">' + escapeHtml(group.appName) + "</span>" +
+      (group.items.length > 1
+        ? '<span class="ntf-count">' + group.items.length + " 条</span>"
+        : "") +
+      (isUnread ? '<span class="ntf-dot" title="新通知"></span>' : "") +
+      '<span class="ntf-time">' + escapeHtml(relTime(newest.tsMs)) + "</span>" +
       "</span>";
 
     const titleText = newest.title || newest.body || "（无内容）";
-    const title = '<span class="ng-title">' + escapeHtml(titleText) + "</span>";
+    const title = '<span class="ntf-title">' + escapeHtml(titleText) + "</span>";
     const body =
-      newest.title && newest.body ? '<span class="ng-body">' + escapeHtml(newest.body) + "</span>" : "";
+      newest.title && newest.body ? '<span class="ntf-body">' + escapeHtml(newest.body) + "</span>" : "";
 
     return (
-      '<div class="ng' +
+      '<div class="ntf-group' +
       (isOpen ? " expanded" : "") +
       (layers ? " stacked stacked-" + layers : "") +
+      (launchable ? " has-launch" : "") +
       '" data-key="' +
       escapeHtml(group.key) +
       '">' +
       stack +
-      '<button class="ng-card" type="button" aria-expanded="' + (isOpen ? "true" : "false") + '">' +
-      '<span class="ng-icon">' + iconHtml(group, index) + "</span>" +
-      '<span class="ng-main">' + meta + title + body + "</span>" +
+      '<button class="ntf-card" type="button" aria-expanded="' +
+      (isOpen ? "true" : "false") +
+      '" aria-label="' +
+      escapeHtml(group.appName + (group.items.length > 1 ? "，共 " + group.items.length + " 条通知" : "")) +
+      '">' +
+      '<span class="ntf-icon' +
+      (launchable ? " ntf-icon-open" : "") +
+      '"' +
+      (launchable ? ' title="打开 ' + appLabel + '"' : "") +
+      ">" +
+      iconHtml(group, index) +
+      "</span>" +
+      '<span class="ntf-main">' + meta + title + body + "</span>" +
       "</button>" +
-      (isOpen ? '<div class="ng-items">' + group.items.map(itemHtml).join("") + "</div>" : "") +
+      // 「进入应用」入口：放在卡片右上角（兄弟节点，避免按钮嵌套）
+      (launchable
+        ? '<button class="ntf-open-app" type="button" title="打开 ' +
+          appLabel +
+          '" aria-label="打开 ' +
+          appLabel +
+          '">' +
+          icon("externalLink", { size: 12 }) +
+          "</button>"
+        : "") +
+      (isOpen ? '<div class="ntf-items">' + group.items.map((n) => itemHtml(n, group)).join("") + "</div>" : "") +
       "</div>"
     );
   }
 
-  function itemHtml(n) {
-    const title = n.title ? '<div class="ng-item-title">' + escapeHtml(n.title) + "</div>" : "";
-    const body = n.body ? '<div class="ng-item-body">' + escapeHtml(n.body) + "</div>" : "";
+  function itemHtml(n, group) {
+    const title = n.title ? '<div class="ntf-item-title">' + escapeHtml(n.title) + "</div>" : "";
+    const body = n.body ? '<div class="ntf-item-body">' + escapeHtml(n.body) + "</div>" : "";
+    const clickable = !!(group && group.launch);
     return (
-      '<div class="ng-item">' +
+      '<div class="ntf-item' +
+      (clickable ? " ntf-item-clickable" : "") +
+      '"' +
+      (clickable
+        ? ' role="button" tabindex="0" title="打开 ' + escapeHtml(group.appName) + '"'
+        : "") +
+      ">" +
       title +
       body +
-      '<div class="ng-item-time">' + escapeHtml(relTime(n.tsMs)) + "</div>" +
+      '<div class="ntf-item-time">' + escapeHtml(relTime(n.tsMs)) + "</div>" +
       "</div>"
     );
   }
@@ -354,6 +448,50 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
     for (const n of visible) hidden.add(String(n.id));
     writeHidden(hidden);
     renderList();
+  }
+
+  // ---------- 进入来源应用 ----------
+
+  /** 打开分组对应的来源应用；后端只接受分组键，启动目标由通知缓存解析。 */
+  function openApp(key) {
+    if (!key || openingKey) return;
+    const group = groups.find((g) => g.key === key);
+    if (!group || !group.launch) return;
+    openingKey = key;
+    invoke("open_notification_app", { appKey: key })
+      .then(() => {
+        hideError();
+        // 成功后面板由 topbar 收起（启动的应用同时会拿到前台）
+        notifyOpenApp();
+      })
+      .catch((e) => {
+        showError("打开应用失败：" + errText(e));
+      })
+      .finally(() => {
+        openingKey = "";
+      });
+  }
+
+  function showError(msg) {
+    if (!errEl) return;
+    errEl.textContent = msg;
+    errEl.classList.remove("hidden");
+    if (errorTimer) clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => {
+      errorTimer = null;
+      hideError();
+    }, 3000);
+  }
+
+  function hideError() {
+    if (errorTimer) {
+      clearTimeout(errorTimer);
+      errorTimer = null;
+    }
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
   }
 
   // ---------- 本地存储（读写失败不影响功能） ----------
@@ -428,23 +566,50 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
 
   // ---------- 对外接口 ----------
 
+  /**
+   * 通知分组错峰入场：每次打开面板重播一次（动画定义在 motion.css 的 .ntf-list.entering）。
+   * 只加一个 900ms 的临时类，之后到达的新通知不再重播，避免列表抖动。
+   */
+  function playEnterStagger() {
+    if (!listEl) return;
+    listEl.classList.remove("entering");
+    void listEl.offsetWidth; // 强制重排，连续打开也能重播
+    listEl.classList.add("entering");
+    if (enterTimer) clearTimeout(enterTimer);
+    enterTimer = setTimeout(() => {
+      enterTimer = null;
+      if (listEl) listEl.classList.remove("entering");
+    }, 900);
+  }
+
   return {
     onOpen() {
       if (!el) return;
       panelOpen = true;
+      hideError();
+      // 记录打开前的已读水位：此后渲染出的、比它新的分组显示未读点
+      unreadBaseline = lastSeen;
       view = todayInfo(); // 每次打开回到当前月份
       if (calEl) renderCalendar(calEl, view);
       startClock();
       syncTimers();
       ensureListen();
       if (media) media.start();
+      playEnterStagger();
       refreshTick(false);
       markSeen();
     },
     onClose() {
       panelOpen = false;
+      openingKey = "";
+      hideError();
       stopClock();
       syncTimers();
+      if (enterTimer) {
+        clearTimeout(enterTimer);
+        enterTimer = null;
+      }
+      if (listEl) listEl.classList.remove("entering");
       if (media) media.stop();
     },
     setEnabled(v) {
@@ -462,6 +627,7 @@ export function createNotificationsPanel({ onUnreadChange } = {}) {
         groups = [];
         expanded.clear();
         loadFailed = false;
+        unreadBaseline = 0;
         if (listEl) listEl.innerHTML = "";
         if (media) media.stop();
         syncTimers();

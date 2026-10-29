@@ -57,3 +57,41 @@ pub fn set_muted(muted: bool) -> Result<(), String> {
             .map_err(|e| format!("设置静音状态失败: {e}"))
     }
 }
+
+/// 把目标音量夹取到 0..=100（纯函数，便于单测）。
+pub fn clamp_percent(value: i32) -> u8 {
+    value.clamp(0, 100) as u8
+}
+
+/// 相对调节音量（滚轮）：读当前值 → 夹取 → 设置。
+///
+/// 返回 (新音量, 调节后是否静音)。当前是静音且新音量 > 0 时自动解除静音，
+/// 与 Windows 音量滚轮的直觉一致。
+pub fn nudge(delta: i32) -> Result<(u8, bool), String> {
+    let (current, muted) = state().ok_or_else(|| String::from("未找到可用的音频输出设备"))?;
+    let next = clamp_percent(current as i32 + delta);
+    set_volume(next)?;
+    let muted_after = if next > 0 && muted {
+        set_muted(false)?;
+        false
+    } else {
+        muted
+    };
+    Ok((next, muted_after))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_percent_stays_in_range() {
+        assert_eq!(clamp_percent(-50), 0);
+        assert_eq!(clamp_percent(0), 0);
+        assert_eq!(clamp_percent(37), 37);
+        assert_eq!(clamp_percent(100), 100);
+        assert_eq!(clamp_percent(101), 100);
+        assert_eq!(clamp_percent(i32::MAX), 100);
+        assert_eq!(clamp_percent(i32::MIN), 0);
+    }
+}

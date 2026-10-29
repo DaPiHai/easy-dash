@@ -2,9 +2,10 @@
 // 以及图标拖拽排序（Dock 同款「位置预览」：源项半透明留在新位置、ghost 跟手、实时让位）。
 // 数据来自 get_tray_items()；后端刷新完成后会发 tray-changed（payload 为数组）。
 import { invoke, invokeRetry, listen, escapeHtml } from "./api.js";
+import { subscribeTheme, resolvedTheme } from "./theme.js";
 
-/** 托盘刷新间隔（毫秒） */
-const REFRESH_MS = 10000;
+/** 兜底刷新间隔（毫秒）：正常情况下由 tray-changed 事件驱动，不再轮询 */
+const FALLBACK_MS = 30000;
 /** 拖拽判定阈值（像素） */
 const DRAG_THRESHOLD = 5;
 /** 拖拽结束后抑制 click 的时长（毫秒），避免松手被当成一次托盘点击 */
@@ -22,6 +23,7 @@ let started = false;
 let timer = null;
 let domBound = false;
 let listenBound = false;
+let themeBound = false;
 let fetchSeq = 0;
 
 // ---------- 拖拽状态 ----------
@@ -37,7 +39,7 @@ function keyOf(item, index) {
   return String(it.name || "item") + "#" + index;
 }
 
-/** 启动托盘镜像（幂等）：首刷 + 每 10s 刷新 */
+/** 启动托盘镜像（幂等）：事件驱动；30s 兜底读缓存，防止极端情况下漏事件 */
 export function startTray() {
   if (started) return;
   started = true;
@@ -47,16 +49,15 @@ export function startTray() {
 
   bindDomOnce();
   bindListenOnce();
+  bindThemeOnce();
 
-  // 启动时请求一次后端枚举，随后读取缓存
-  requestBackendRefresh();
+  // 启动时读取缓存；之后由 tray-changed 事件驱动（代理启动时已广播 TaskbarCreated）
   load(true);
 
   timer = setInterval(() => {
     if (!started) return;
-    requestBackendRefresh();
     load(false);
-  }, REFRESH_MS);
+  }, FALLBACK_MS);
 }
 
 /** 停止托盘镜像（配置关闭时调用）：清空界面与定时器 */
@@ -154,48 +155,85 @@ function sameItems(a, b) {
 function render() {
   if (!trayEl) return;
   trayEl.innerHTML = items.map(itemHtml).join("");
-  markDarkIcons();
+  markTrayIcons();
+}
+
+/** 深色主题下“近黑”的亮度阈值（0–255，alpha 加权平均） */
+const TRAY_DARK_LUM = 85;
+
+/**
+ * 托盘图标随主题做可见性修正：
+ * - 深色主题：近黑图标在深色顶栏上几乎不可见（Docker 黑鲸鱼、抖音黑底、QQ 深色企鹅等），
+ *   加 .tray-dark → CSS 垫一层浅色圆角底；
+ * - 浅色主题：近白图标在浅色顶栏上看不见，加 .tray-invert → CSS filter brightness(.35)。
+ * dataset.trayTheme 记录上次分析时的主题，主题没变就跳过重采样（render 频繁调用也不心疼）。
+ * data URL 同源，canvas 不会被污染。
+ */
+function markTrayIcons() {
+  if (!trayEl) return;
+  const theme = resolvedTheme() === "light" ? "light" : "dark";
+  const imgs = trayEl.querySelectorAll("img");
+  for (const img of imgs) {
+    if (img.dataset.trayTheme === theme) continue;
+    img.dataset.trayTheme = theme;
+    analyzeIcon(img, theme);
+  }
 }
 
 /**
- * 深色图标在深色顶栏上几乎不可见（Docker 黑鲸鱼、抖音黑底、QQ 深色企鹅等）。
- * 用 canvas 采样图标的 alpha 加权平均亮度，偏暗的加 .tray-dark 类，
- * CSS 会给它垫一层浅色圆角底。data URL 同源，canvas 不会被污染。
+ * 主题切换后强制重算全部图标：清掉两类修正类和 dataset 缓存再重新分析，
+ * 避免「上次分析时的 theme 缓存命中 → 不再重算」或 img.complete 时序导致的类残留。
  */
-function markDarkIcons() {
+function resetTrayIcons() {
   if (!trayEl) return;
-  const imgs = trayEl.querySelectorAll("img");
-  for (const img of imgs) {
-    if (img.dataset.darkChecked) continue;
-    img.dataset.darkChecked = "1";
-    const analyze = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = 16;
-        canvas.height = 16;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (!ctx) return;
-        ctx.clearRect(0, 0, 16, 16);
-        ctx.drawImage(img, 0, 0, 16, 16);
-        const data = ctx.getImageData(0, 0, 16, 16).data;
-        let sum = 0;
-        let weight = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          const a = data[i + 3];
-          if (a < 40) continue; // 透明padding不计入
-          const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
-          sum += lum * a;
-          weight += a;
-        }
-        if (weight > 0 && sum / weight < 85) {
-          img.classList.add("tray-dark");
-        }
-      } catch (e) {
-        /* canvas 不可用时保持原样 */
-      }
-    };
-    if (img.complete && img.naturalWidth > 0) analyze();
-    else img.addEventListener("load", analyze, { once: true });
+  for (const img of trayEl.querySelectorAll("img")) {
+    img.classList.remove("tray-dark", "tray-invert");
+    delete img.dataset.trayTheme;
+  }
+  markTrayIcons();
+}
+
+function analyzeIcon(img, theme) {
+  const apply = () => {
+    // 浅色主题不再按亮度给整张图加 filter：很多应用图标是白底/浅底方形，
+    // brightness 会把整块底压成半透明黑，反而挡住图标。浅色下只用 CSS
+    // 的 drop-shadow 给白色透明图标补轮廓。
+    if (theme !== "dark") {
+      img.classList.remove("tray-dark", "tray-invert");
+      return;
+    }
+    const lum = averageIconLuminance(img);
+    if (lum === null) return;
+    img.classList.toggle("tray-dark", lum < TRAY_DARK_LUM);
+    img.classList.remove("tray-invert");
+  };
+  if (img.complete && img.naturalWidth > 0) apply();
+  else img.addEventListener("load", apply, { once: true });
+}
+
+/** 采样 16×16 图标，返回 alpha 加权平均亮度；canvas 不可用时返回 null */
+function averageIconLuminance(img) {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 16;
+    canvas.height = 16;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.drawImage(img, 0, 0, 16, 16);
+    const data = ctx.getImageData(0, 0, 16, 16).data;
+    let sum = 0;
+    let weight = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const a = data[i + 3];
+      if (a < 40) continue; // 透明 padding 不计入
+      const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      sum += lum * a;
+      weight += a;
+    }
+    return weight > 0 ? sum / weight : null;
+  } catch (e) {
+    return null; // canvas 不可用时保持原样
   }
 }
 
@@ -235,14 +273,6 @@ function itemHtml(item, index) {
     inner +
     "</button>"
   );
-}
-
-function requestBackendRefresh() {
-  try {
-    invoke("refresh_tray").catch(() => {});
-  } catch (e) {
-    /* Tauri 尚未注入时忽略 */
-  }
 }
 
 // ---------- 事件绑定（委托，图标重绘不需要重新绑定） ----------
@@ -304,23 +334,54 @@ function bindListenOnce() {
   }
 }
 
+function bindThemeOnce() {
+  if (themeBound) return;
+  themeBound = true;
+  subscribeTheme(() => {
+    // 主题切换后强制重算：先清缓存/旧类，再按新主题重新采样（防止 tray-dark/tray-invert 残留）
+    if (started) resetTrayIcons();
+  });
+}
+
 function clickTray(el, button) {
   const index = Number(el.dataset.index);
-  if (!Number.isInteger(index) || index < 0) return;
+  if (!Number.isInteger(index) || index < 0) {
+    showTrayClickError("托盘项索引无效，请稍后重试");
+    return;
+  }
   hideTooltip();
-  // 弹窗锚点 = 顶栏图标中心（顶栏窗口固定在屏幕 (0,0)，client 坐标即屏幕坐标）
+  // 弹窗锚点 = 顶栏图标中心（CSS 客户区坐标）；后端用 ClientToScreen + 该窗口 DPI
+  // 换算为屏幕物理坐标，副屏/混合 DPI 下不再假设窗口在 (0,0)。
   let anchorX = null;
+  let anchorY = null;
   try {
     const r = el.getBoundingClientRect();
     anchorX = Math.round(r.left + r.width / 2);
+    anchorY = Math.round(r.top + r.height / 2);
   } catch (e) {
     anchorX = null;
+    anchorY = null;
   }
+  // 带上稳定 key：托盘项增减会让后端缓存索引漂移，后端按 key 兜底
+  const key = el.dataset.key || null;
   try {
-    invoke("tray_click", { index, button, anchorX }).catch(() => {});
+    invoke("tray_click", { index, button, anchorX, anchorY, key }).catch((e) =>
+      showTrayClickError(e)
+    );
   } catch (e) {
-    /* 忽略 */
+    showTrayClickError(e);
   }
+}
+
+/** 托盘点击失败时在图标附近短暂提示，避免"点了完全没反应"且无从排查 */
+function showTrayClickError(e) {
+  const msg =
+    (typeof e === "string" ? e : (e && e.message) || "") || "托盘点击失败";
+  if (!tooltipEl) return;
+  tooltipEl.textContent = msg;
+  tooltipEl.classList.remove("hidden");
+  clearTimeout(showTrayClickError._timer);
+  showTrayClickError._timer = setTimeout(() => hideTooltip(), 2400);
 }
 
 // ---------- 拖拽排序（Dock 同款位置预览） ----------

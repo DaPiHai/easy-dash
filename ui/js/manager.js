@@ -7,6 +7,10 @@
 // - 固定应用用 set_pinned 提交「完整列表」实现增删与上下移。
 // - 所有列表操作失败都回滚到「后端为准」的状态并弹红色 toast。
 import { invoke, invokeRetry, listen, escapeHtml } from "./api.js";
+import { getThemeState, subscribeTheme, setMaterialStyle, MATERIAL_STYLES } from "./theme.js";
+import { attachSegIndicators } from "./seg-thumb.js";
+import "./glass.js";
+import "./cursor-glow.js";
 
 /** 与 Dock / 应用中心一致的字母占位配色 */
 const LETTER_COLORS = ["#3584e4", "#e66100", "#2ec27e", "#9141ac", "#e01b24", "#1c71d8", "#8f4e2b"];
@@ -15,11 +19,33 @@ const ICON_DEBOUNCE_MS = 300;
 /** toast 显示时长 */
 const TOAST_MS = 3000;
 /** 开关字段（camelCase，与 Config 一致） */
-const PREF_FIELDS = ["fullscreenHide", "reserveTopbarSpace", "trayIcons", "notificationCenter", "controlCenter"];
+const PREF_FIELDS = [
+  "fullscreenHide",
+  "reserveTopbarSpace",
+  "trayIcons",
+  "notificationCenter",
+  "controlCenter",
+  "hideTaskbar",
+  "dockAutoHide",
+  "syncSystemTheme",
+  "pointerGlow",
+  "topbarAllMonitors",
+  "dockAllMonitors",
+];
+
+/** 只在多屏时可用（单屏时置灰） */
+const MULTI_PREF_FIELDS = ["topbarAllMonitors", "dockAllMonitors"];
+
+/** 主题模式的中文文案（v0.2.1 起只有浅色 / 深色，不再有「跟随系统」） */
+const THEME_MODE_LABEL = { light: "浅色", dark: "深色" };
+const SYSTEM_THEME_LABEL = { light: "浅色", dark: "深色" };
+/** 界面材质的中文文案（与后端 config::MATERIAL_STYLES 一致） */
+const MATERIAL_LABEL = { solid: "标准", liquid: "液态玻璃", glow: "柔光玻璃" };
 
 // ---------- 状态 ----------
 let config = null; // 最近一次 get_config
 let info = null; // get_manager_info
+let monitorLayout = null; // get_monitor_layout（多屏页）
 let pinnedIcons = []; // (string|null)[]，与 config.pinned 顺序对应
 let importedApps = []; // 应用中心导入应用（kind==="import"）
 let trayItems = []; // 原始托盘项
@@ -41,6 +67,8 @@ const toastEl = document.getElementById("mp-toast");
 const pinnedListEl = document.getElementById("mp-pinned-list");
 const importListEl = document.getElementById("mp-import-list");
 const trayListEl = document.getElementById("mp-tray-list");
+const monitorListEl = document.getElementById("mp-monitor-list");
+const monitorCountEl = document.getElementById("mp-monitor-count");
 const hotkeyOverviewEl = document.getElementById("mp-hotkey-overview");
 const hotkeyAppCenterEl = document.getElementById("mp-hotkey-appcenter");
 const hotkeyWarnEl = document.getElementById("mp-hotkey-warn");
@@ -51,6 +79,9 @@ const closeBtn = document.getElementById("mp-close");
 const versionEl = document.getElementById("mp-version");
 const identifierEl = document.getElementById("mp-identifier");
 const configPathEl = document.getElementById("mp-config-path");
+const taskbarStatusEl = document.getElementById("mp-taskbar-status");
+const themeStatusEl = document.getElementById("mp-theme-status");
+const materialSegEl = document.getElementById("mp-material");
 const switchInputs = panelEl ? Array.from(panelEl.querySelectorAll("input[data-pref]")) : [];
 
 // ---------- 小工具 ----------
@@ -133,11 +164,135 @@ function setTab(name) {
 // ---------- 渲染：通用 ----------
 
 function renderSwitches() {
+  const singleMonitor = !monitorLayout || monitorLayout.count <= 1;
   for (const input of switchInputs) {
     const key = input.dataset.pref;
     if (PREF_FIELDS.indexOf(key) < 0) continue;
     input.checked = !!(config && config[key]);
-    input.disabled = !config || patching;
+    input.disabled = !config || patching || (singleMonitor && MULTI_PREF_FIELDS.indexOf(key) >= 0);
+  }
+}
+
+/** 多屏页：显示器列表 + 数量。名称去掉 `\\.\` 前缀，主屏加徽标 */
+function renderMonitors() {
+  if (!monitorListEl) return;
+  const list = monitorLayout && Array.isArray(monitorLayout.monitors) ? monitorLayout.monitors : [];
+  if (monitorCountEl) {
+    monitorCountEl.textContent = list.length ? list.length + " 块" : "—";
+  }
+  if (!list.length) {
+    monitorListEl.innerHTML = '<div class="mp-empty">未检测到显示器</div>';
+    return;
+  }
+  const rows = list
+    .slice()
+    .sort((a, b) => Number(!!b.primary) - Number(!!a.primary))
+    .map((m) => {
+      const rawName = String(m.name || "");
+      const displayName = rawName.startsWith("\\\\.\\") ? rawName.slice(4) : rawName;
+      const name = escapeHtml(displayName || "显示器");
+      const scale = Math.round((Number(m.scaleFactor) || 1) * 100);
+      const res = `${Number(m.width) || 0}×${Number(m.height) || 0} · ${scale}% · (${Number(m.x) || 0}, ${Number(m.y) || 0})`;
+      const badge = m.primary ? '<span class="mp-badge">主屏</span>' : "";
+      return (
+        '<div class="mp-item mp-item-static">' +
+        '<div class="mp-item-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" ' +
+        'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
+        '<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>' +
+        '<div class="mp-item-main"><div class="mp-item-name">' +
+        name +
+        badge +
+        '</div><div class="mp-item-path">' +
+        escapeHtml(res) +
+        "</div></div></div>"
+      );
+    });
+  monitorListEl.innerHTML = rows.join("");
+}
+
+/** 任务栏隐藏状态：已隐藏 / 可见 / 桥接不可用降级提示 */
+function renderTaskbarStatus(st) {
+  if (!taskbarStatusEl) return;
+  if (!st || typeof st !== "object") {
+    taskbarStatusEl.textContent = "状态未知";
+    taskbarStatusEl.className = "mp-row-status";
+    return;
+  }
+  let text;
+  let cls = "mp-row-status";
+  if (st.supported === false) {
+    text = "当前系统不支持自动隐藏任务栏";
+  } else if (st.hidden) {
+    if (st.bridgeOk) {
+      text = "已隐藏 · 托盘桥接正常";
+    } else {
+      text = "已隐藏 · 托盘桥接不可用，顶栏托盘可能失效";
+      cls += " warn";
+    }
+  } else {
+    text = "任务栏当前可见";
+  }
+  taskbarStatusEl.textContent = text;
+  taskbarStatusEl.className = cls;
+}
+
+async function refreshTaskbarStatus() {
+  try {
+    renderTaskbarStatus(await invoke("get_taskbar_state"));
+  } catch (e) {
+    renderTaskbarStatus(null);
+  }
+}
+
+/** 材质分段控件：选中态 + aria-pressed（数据源始终是 theme.js 的状态快照） */
+function renderMaterialSeg(state) {
+  if (!materialSegEl) return;
+  const current =
+    state && MATERIAL_STYLES.indexOf(state.material) >= 0 ? state.material : "solid";
+  const buttons = materialSegEl.querySelectorAll("button[data-material]");
+  for (const btn of buttons) {
+    const on = btn.dataset.material === current;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+/** 当前外观：easy-dash 明暗 + 界面材质 + Windows 系统当前深浅
+ *（系统深浅可能因「同时控制系统主题」关闭而与 easy-dash 不同） */
+function renderThemeStatus(state) {
+  renderMaterialSeg(state);
+  if (!themeStatusEl) return;
+  if (!state || typeof state !== "object") {
+    themeStatusEl.textContent = "—";
+    return;
+  }
+  const mode = THEME_MODE_LABEL[state.mode] || "深色";
+  const material = MATERIAL_LABEL[state.material] || MATERIAL_LABEL.solid;
+  const system = state.systemDark ? SYSTEM_THEME_LABEL.dark : SYSTEM_THEME_LABEL.light;
+  themeStatusEl.textContent = mode + " · " + material + " · Windows " + system;
+}
+
+/** 切换界面材质（失败回滚由 theme.js 负责，这里只提示） */
+async function onMaterialClick(material) {
+  if (!material) return;
+  try {
+    if (getThemeState().material === material) return;
+  } catch (e) {
+    /* theme.js 异常时继续尝试提交 */
+  }
+  try {
+    const warnings = await setMaterialStyle(material);
+    if (Array.isArray(warnings) && warnings.length) showToast(warnings[0], "err");
+  } catch (e) {
+    showToast("切换界面材质失败：" + errText(e), "err");
+  }
+}
+
+function refreshThemeStatus() {
+  try {
+    renderThemeStatus(getThemeState());
+  } catch (e) {
+    renderThemeStatus(null);
   }
 }
 
@@ -367,17 +522,31 @@ async function loadTrayItems() {
 }
 
 /** 打开面板 / 首屏加载：全量拉一次 */
+async function loadMonitorLayout() {
+  try {
+    monitorLayout = await invoke("get_monitor_layout");
+  } catch (e) {
+    monitorLayout = null;
+  }
+  renderMonitors();
+  renderSwitches();
+}
+
 async function loadAll() {
   renderHotkeyWarnings([]);
+  refreshThemeStatus();
   await loadInfo();
+  await loadMonitorLayout();
   const ok = await loadConfig(true);
   if (!ok) {
     // 配置读不到时至少把列表置成空态，避免一直显示「加载中…」
     renderPinned();
     renderImported();
     renderTray();
+    refreshTaskbarStatus();
     return;
   }
+  refreshTaskbarStatus();
   await Promise.all([loadPinnedIcons(), loadImportedApps(), loadTrayItems()]);
 }
 
@@ -623,9 +792,37 @@ async function closeManager() {
 
 // ---------- 事件绑定 ----------
 
+// 退出 easy-dash：首次点击进入 3 秒确认态，再次点击才真正退出。
+// 托盘右键菜单异常（拿不到菜单 / 点击无响应）时的备用退出入口。
+async function quitApp(btn) {
+  if (!btn) return;
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.dataset.label = btn.textContent.trim();
+    btn.textContent = "确认退出？";
+    setTimeout(() => {
+      if (btn.dataset.armed !== "1") return;
+      delete btn.dataset.armed;
+      btn.textContent = btn.dataset.label || "退出 easy-dash";
+    }, 3000);
+    return;
+  }
+  delete btn.dataset.armed;
+  btn.disabled = true;
+  btn.textContent = "正在退出…";
+  try {
+    await invoke("quit_app");
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = btn.dataset.label || "退出 easy-dash";
+    showToast("退出失败：" + errText(e), "err");
+  }
+}
+
 const ACTIONS = {
   "reload-config": (btn) => reloadConfig(btn),
   "open-config": (btn) => openConfigFolder(btn),
+  "quit-app": (btn) => quitApp(btn),
   "reset-dock-order": (btn) => resetDockOrder(btn),
   "reset-app-order": (btn) => resetAppOrder(btn),
   "reset-tray-order": (btn) => resetTrayOrder(btn),
@@ -644,6 +841,15 @@ function bindEvents() {
   if (saveHotkeysBtn) saveHotkeysBtn.addEventListener("click", () => saveHotkeys(saveHotkeysBtn));
   if (addPinnedBtn) addPinnedBtn.addEventListener("click", () => addPinnedApp(addPinnedBtn));
   if (importAppBtn) importAppBtn.addEventListener("click", () => importAppEntry(importAppBtn));
+
+  // 界面材质：三档单选，点选即提交（走 set_material，单一写入路径）
+  if (materialSegEl) {
+    materialSegEl.addEventListener("click", (e) => {
+      const btn = e.target.closest ? e.target.closest("[data-material]") : null;
+      if (!btn || btn.disabled) return;
+      onMaterialClick(btn.dataset.material);
+    });
+  }
 
   // 开关：切换即提交单个字段
   if (panelEl) {
@@ -737,10 +943,14 @@ function ensureListeners() {
       ["config-changed", () => {
         // 本端刚刷新过就不再重复拉（避免一次操作触发两次 get_config）
         if (configEventTimer) clearTimeout(configEventTimer);
-        configEventTimer = setTimeout(() => {
+        configEventTimer = setTimeout(async () => {
           configEventTimer = null;
-          if (Date.now() - lastConfigRefreshAt < 400) return;
-          refreshConfigSilent();
+          if (Date.now() - lastConfigRefreshAt < 400) {
+            refreshTaskbarStatus();
+            return;
+          }
+          await refreshConfigSilent();
+          refreshTaskbarStatus();
         }, 120);
       }],
       ["tray-changed", () => {
@@ -784,6 +994,19 @@ async function main() {
   bindEvents();
   ensureListeners();
   setTab("general");
+  // 分段控件滑动指示器（界面材质三档）
+  try {
+    attachSegIndicators(panelEl || document);
+  } catch (e) {
+    /* DOM 异常时忽略：退化为按钮自身选中态 */
+  }
+  // 主题状态变化（控制中心切换浅/深）时刷新「当前外观」
+  try {
+    subscribeTheme(renderThemeStatus);
+  } catch (e) {
+    /* theme.js 未就绪时忽略 */
+  }
+  refreshThemeStatus();
 
   await waitTauri();
   ensureListeners();

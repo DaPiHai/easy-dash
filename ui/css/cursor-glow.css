@@ -1,0 +1,272 @@
+/* ============================================================
+   easy-dash 鼠标流光层（v0.4）
+
+   效果（参照 iOS 与国产安卓系统）：
+   - 跟随柔光：光标掠过顶栏 / Dock / 面板 / 卡片时，一团柔光跟着指针（带甩尾）；
+   - 边框流光：液态玻璃下，1px 边框光沿元素边缘缓慢绕行（HyperOS / OriginOS 风格），
+     指针方位只决定起始角；
+   - 点按光晕：按下时从落点扩散一圈柔光（iOS 触感高光 / 安卓 ripple 的柔光版）。
+
+   实现要点：
+   1) 光层是 JS 注入的独立 span（.glow-spot / .glow-streak / .glow-burst），不用伪元素
+      （.panel::after / .topbar::after / .dock::after / .mp-panel::after 已被
+        materials.css 的磨砂噪点占用，.panel::before 是顶部高光）。
+   2) 坐标/角度/半径走 @property 注册的自定义属性（--gx / --gy / --ga / --gaf / --bur），
+      因此可以用 transition 做「略带甩尾」的跟随、用 keyframes 让边框光流动与扩散。
+   3) 只提升不透明度、不改布局；pointer-events: none，不抢焦点、不影响读屏。
+   4) 开关：js 在关闭时直接不激活；reduced-motion 时去掉跟随延迟、边框流光与点按光晕。
+   ============================================================ */
+
+@property --gx {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: -200px;
+}
+
+@property --gy {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: -200px;
+}
+
+@property --ga {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* 边框流光的「行进角」：由 CSS 动画持续递增，--ga 只提供起始方位 */
+@property --gaf {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* 点按光晕的扩散半径（iOS 触感高光 / 安卓 ripple 的柔光版） */
+@property --bur {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 10px;
+}
+
+/* ============================================================
+   1. 材质 × 明暗参数
+   ============================================================ */
+
+/* 标准（默认，深色）：克制的冷白 */
+:root {
+  --glow-strength: 0.12;
+  --glow-radius: 150px;
+  --glow-color: rgba(255, 255, 255, 0.9);
+  --glow-burst: rgba(255, 255, 255, 0.55);
+  --glow-follow: 60ms;
+}
+
+/* 标准（浅色）：纯白在浅底上不可见，改用冷蓝折射光 */
+:root[data-theme="light"] {
+  --glow-strength: 0.12;
+  --glow-color: color-mix(in srgb, var(--accent) 45%, #ffffff);
+  --glow-burst: color-mix(in srgb, var(--accent) 40%, #ffffff);
+}
+
+/* 液态玻璃：更锐利、更强、略带甩尾（通透玻璃上光斑更明显） */
+:root[data-material="liquid"]:not([data-theme="light"]) {
+  --glow-strength: 0.26;
+  --glow-radius: 130px;
+  --glow-follow: 90ms;
+}
+
+:root[data-material="liquid"][data-theme="light"] {
+  --glow-strength: 0.24;
+  --glow-color: color-mix(in srgb, var(--accent) 55%, #ffffff);
+  --glow-follow: 90ms;
+}
+
+/* 柔光玻璃：更大、更柔、偏暖 */
+:root[data-material="glow"]:not([data-theme="light"]) {
+  --glow-strength: 0.32;
+  --glow-radius: 210px;
+  --glow-color: rgba(255, 246, 238, 0.95);
+  --glow-burst: rgba(255, 240, 225, 0.6);
+  --glow-follow: 110ms;
+}
+
+:root[data-material="glow"][data-theme="light"] {
+  --glow-strength: 0.3;
+  --glow-radius: 210px;
+  --glow-color: color-mix(in srgb, #ffd9bd 50%, #ffffff);
+  --glow-follow: 110ms;
+}
+
+/* ============================================================
+   2. 光层本体
+   ============================================================ */
+
+/* 只有静态定位的 host 需要补 relative（外壳已是 absolute / fixed / relative，
+   直接覆盖会破坏它们的定位，因此只列静态的那批） */
+.glow-host:is(
+    .ctl-card,
+    .ctl-action,
+    .mp-card,
+    .mp-row,
+    .mp-btn,
+    .ntf-action,
+    .ac-searchbar,
+    .ac-pager-btn,
+    .med,
+    .card,
+    .dock
+  ) {
+  position: relative;
+}
+
+.glow-spot {
+  position: absolute;
+  inset: 0;
+  z-index: 3; /* 高于 materials.css 噪点层的 z-index:2，低于电源菜单 30 */
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    var(--glow-radius) circle at var(--gx, -200px) var(--gy, -200px),
+    var(--glow-color),
+    transparent 70%
+  );
+  transition: opacity 160ms var(--ease-out-fluid), --gx var(--glow-follow) linear,
+    --gy var(--glow-follow) linear, --ga var(--glow-follow) linear;
+}
+
+.glow-host.glow-on > .glow-spot {
+  opacity: var(--glow-strength);
+}
+
+/* 小控件用更小的光斑半径：否则 130–210px 的柔光会把整个按钮铺亮，
+   看不出「跟随」的落点（外壳 / 卡片仍用全局半径）。 */
+.glow-host:is(.ctl-tile, .ac-app, .mp-btn, .ntf-action, .ctl-action, .ac-pager-btn, .dock-item) {
+  --glow-radius: 90px;
+}
+
+.glow-host:is(.ctl-tile, .ac-app, .dock-item) {
+  --glow-radius: 76px;
+}
+
+/* 首次点亮瞬间不允许「从左上角扫过来」：JS 会加 .glow-instant 让第一帧直接落位 */
+.glow-spot.glow-instant {
+  transition: opacity 160ms var(--ease-out-fluid);
+}
+
+/* ============================================================
+   3. 边框流光（仅液态玻璃；只给可交互的卡片 / 磁贴 / 条状外壳）
+   - 1px conic 弧用 mask 做描边；--ga 是指针方位（起始角），
+     --gaf 由动画持续递增 ⇒ 光沿边框「流动」（国产系统常见的流光边框）。
+   - 必须是 .glow-spot 的兄弟节点：光斑整体带 opacity，
+     子元素会被父级透明度压暗，达不到「流光」的亮度。
+   ============================================================ */
+
+.glow-streak {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms var(--ease-out-fluid);
+}
+
+.glow-host.glow-on > .glow-streak {
+  opacity: 1;
+}
+
+:root[data-material="liquid"]
+  .glow-host:is(.ctl-tile, .ac-app, .ac-searchbar, .mp-card, .ntf-card, .dock)
+  > .glow-streak {
+  background: conic-gradient(
+    from calc(var(--ga, 0deg) + var(--gaf, 0deg)),
+    transparent 0deg 26deg,
+    color-mix(in srgb, var(--accent) 18%, #ffffff) 54deg,
+    transparent 84deg 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  padding: 1px;
+}
+
+/* 悬停期间光沿边框缓慢绕行（4.2s 一圈，离开即停） */
+:root[data-material="liquid"]
+  .glow-host:is(.ctl-tile, .ac-app, .ac-searchbar, .mp-card, .ntf-card, .dock).glow-on
+  > .glow-streak {
+  animation: glow-flow 4200ms linear infinite;
+}
+
+@keyframes glow-flow {
+  from {
+    --gaf: 0deg;
+  }
+  to {
+    --gaf: 360deg;
+  }
+}
+
+/* ============================================================
+   4. 点按光晕（iOS 触感高光 / 安卓 ripple 的柔光版）
+   在按下点展开一圈柔光，从 8px 扩散到 ~190px 并淡出
+   ============================================================ */
+
+.glow-burst {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    circle var(--bur, 10px) at var(--bx, 50%) var(--by, 50%),
+    var(--glow-burst, rgba(255, 255, 255, 0.55)),
+    transparent 72%
+  );
+}
+
+.glow-burst.play {
+  animation: glow-burst-out 540ms var(--ease-out-fluid);
+}
+
+@keyframes glow-burst-out {
+  0% {
+    --bur: 8px;
+    opacity: 0.9;
+  }
+  55% {
+    --bur: 96px;
+    opacity: 0.34;
+  }
+  100% {
+    --bur: 190px;
+    opacity: 0;
+  }
+}
+
+/* ============================================================
+   5. 降级：reduce-motion / 显式关闭跟随动效
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  .glow-spot {
+    transition: opacity 160ms var(--ease-out-fluid);
+  }
+
+  .glow-streak,
+  .glow-burst {
+    display: none;
+  }
+}
+
+:root[data-glow-motion="off"] .glow-spot {
+  transition: opacity 160ms var(--ease-out-fluid);
+}
+
+:root[data-glow-motion="off"] .glow-streak,
+:root[data-glow-motion="off"] .glow-burst {
+  display: none;
+}

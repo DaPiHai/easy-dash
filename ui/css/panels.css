@@ -1,0 +1,1864 @@
+/* ============================================================
+   顶栏面板样式：通知中心 / 控制中心 / 日历 / 媒体卡 / 连接子视图
+
+   约定：
+   1) 面板外壳统一走 .panel；两种面板只覆盖定位与宽度：
+      控制中心 420×604（靠右），通知中心 880×536（居中）。
+      窗口展开时控制中心高 688 / 通知中心 620：top 40 + 面板 + 底部 44。
+   2) 所有颜色/阴影/圆角/间距/时长一律引用 shared.css 的 token，亮暗两套自动生效；
+      禁止硬编码主题色（唯一例外是通知图标缺图时的品牌字母底色，数据驱动）。
+   3) 类名前缀：
+      ctl-  控制中心（含外观分段、音量/亮度、连接入口、电源、子视图容器）
+      ntf-  通知中心（时钟、分组堆叠卡、未读点、空态、底部通栏）
+      conn- 控制中心的 Wi-Fi / 蓝牙子视图
+      cal-  月历（由 calendar.js 生成）
+      med-  媒体卡（由 media.js 生成）
+      旧的 cc-/np-/ng-/mc-/cv- 面板类已废弃，不要在新代码里使用。
+   4) 内容超高时内部滚动（.ctl-main / .ntf-list / .conn-list），面板本身不滚。
+   ============================================================ */
+
+/* ==================== 面板外壳 ==================== */
+
+.panel {
+  position: absolute;
+  top: 40px; /* 顶栏 32 + 8 间隔：面板像浮在顶栏下方的独立卡片 */
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-3) var(--space-5);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-panel);
+  color: var(--text);
+  overflow: hidden;
+  z-index: 20;
+  transform-origin: top center;
+  animation: panel-in var(--dur-base) var(--ease);
+}
+
+/* 顶部高光：一条 1px 的横向渐隐高光，让外壳有玻璃质感 */
+.panel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: var(--space-5);
+  right: var(--space-5);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--surface-3) 10%, transparent),
+    transparent
+  );
+  pointer-events: none;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.986);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 通知中心：水平居中（窗口宽度 = 屏幕宽度，与顶栏时钟对齐） */
+.panel-notifications {
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: 880px;
+  max-width: calc(100vw - var(--space-6));
+}
+
+/* 控制中心：靠右（与顶栏右侧聚合图标入口对齐） */
+.panel-control {
+  right: var(--space-3);
+  width: 420px;
+  max-width: calc(100vw - var(--space-5));
+}
+
+/* 通知中心：窗口 620 - top 40 - 底部 44 阴影空间 */
+.panel-notifications {
+  height: 536px;
+  max-height: calc(100vh - 84px);
+}
+
+/* 控制中心：外观卡新增「界面材质」分段后窗口 688 - top 40 - 底部 44 阴影空间 */
+.panel-control {
+  height: 604px;
+  max-height: calc(100vh - 84px);
+}
+
+/* ==================== 控制中心：错误 / 提示条 ==================== */
+
+.ctl-error {
+  flex: none;
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--hover);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
+.ctl-error.danger {
+  color: var(--danger);
+  border-color: var(--border);
+}
+
+/* ==================== 控制中心：主区（超高内部滚动） ==================== */
+
+.ctl-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-right: 4px;
+}
+
+.ctl-main > * {
+  flex: none;
+}
+
+/* ---- 快捷磁贴（3 张等宽；Wi-Fi / 蓝牙 = 图标泡开关 + 文字区进入列表） ---- */
+
+.ctl-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.ctl-tile {
+  /* 图标泡底色：off = accent-soft + accent 图标；on = accent 上叠一层 on-accent */
+  --tile-ico-bg: var(--accent-soft);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+  height: 84px;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  text-align: left;
+  overflow: hidden;
+  transition: background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+/* 整块 hover 只换边框：不做位移/缩放，避免影响内部图标尺寸 */
+.ctl-tile:hover {
+  border-color: var(--border-strong);
+}
+
+/* 飞行模式：整块就是一个按钮 */
+.ctl-tile-solo {
+  width: 100%;
+}
+
+.ctl-tile-solo:hover {
+  background-image: linear-gradient(var(--hover), var(--hover));
+}
+
+.ctl-tile-solo:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.ctl-tile-solo.on:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--on-accent), var(--shadow-card);
+}
+
+/* 图标泡按钮：只包住 28px 泡，热区用伪元素外扩 6px（不改变布局） */
+.ctl-tile-toggle {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: inherit;
+}
+
+.ctl-tile-toggle::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+}
+
+.ctl-tile-toggle:focus-visible {
+  outline: none;
+}
+
+.ctl-tile-toggle:focus-visible .ctl-tile-ico {
+  box-shadow: 0 0 0 2px var(--accent-soft), 0 0 0 3px var(--accent);
+}
+
+/* 图标泡：28px；overflow 裁切 + svg 固定 18px 且不超过泡，任何 zoom / 状态都不越界 */
+.ctl-tile-ico {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--tile-ico-bg);
+  color: var(--accent);
+  overflow: hidden;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.ctl-tile-ico svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  max-width: 100%;
+  max-height: 100%;
+  flex: none;
+}
+
+/* hover 反馈：图标泡描边（不缩放，避免任何尺寸变化） */
+.ctl-tile:not(.on) .ctl-tile-toggle:hover .ctl-tile-ico {
+  box-shadow: 0 0 0 2px var(--border-strong);
+}
+
+.ctl-tile.on .ctl-tile-toggle:hover .ctl-tile-ico {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--on-accent) 45%, transparent);
+}
+
+/* 文字区按钮：名称 + 状态 + chevron，点它进入连接子视图 */
+.ctl-tile-open {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+  margin: 0 -4px;
+  min-height: 28px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  text-align: left;
+  color: inherit;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.ctl-tile-open:hover {
+  background: var(--hover);
+}
+
+.ctl-tile.on .ctl-tile-open:hover {
+  background: color-mix(in srgb, var(--on-accent) 14%, transparent);
+}
+
+.ctl-tile-open:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.ctl-tile.on .ctl-tile-open:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--on-accent);
+}
+
+.ctl-tile-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ctl-tile-name {
+  max-width: 100%;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctl-tile-sub {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctl-tile-chevron {
+  flex: none;
+  display: flex;
+  align-items: center;
+  color: var(--text-faint);
+}
+
+.ctl-tile-chevron svg {
+  display: block;
+}
+
+/* 开启态：accent 实心 + on-accent 文字 */
+.ctl-tile.on {
+  --tile-ico-bg: color-mix(in srgb, var(--on-accent) 20%, transparent);
+  background-color: var(--accent);
+  background-image: linear-gradient(180deg, var(--accent-hover), var(--accent));
+  border-color: var(--accent);
+  box-shadow: var(--shadow-card);
+}
+
+.ctl-tile.on:hover {
+  border-color: var(--accent-hover);
+}
+
+.ctl-tile.on .ctl-tile-ico,
+.ctl-tile.on .ctl-tile-name,
+.ctl-tile.on .ctl-tile-sub,
+.ctl-tile.on .ctl-tile-chevron {
+  color: var(--on-accent);
+}
+
+.ctl-tile.on .ctl-tile-sub,
+.ctl-tile.on .ctl-tile-chevron {
+  opacity: 0.85;
+}
+
+.ctl-tile.disabled {
+  opacity: 0.45;
+}
+
+/* ---- 卡片（外观 / 音量与亮度 / 电源共用） ---- */
+
+.ctl-card {
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.ctl-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: 4px;
+  min-width: 0;
+}
+
+.ctl-card-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ctl-card-sub {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 分段控件（外观 / 电源模式） ---- */
+
+.ctl-seg {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+}
+
+.ctl-seg button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.ctl-seg button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* 选中态：accent-soft 底 + accent 描边（用 inset 阴影当 1px 边框，避免布局跳动） */
+.ctl-seg button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.ctl-seg-ico {
+  display: flex;
+  align-items: center;
+}
+
+.ctl-seg-ico svg {
+  display: block;
+}
+
+/* 外观分段：与电源分段同高，三项都能同时放下图标与文字 */
+.ctl-theme button {
+  height: 28px;
+  padding: 0 var(--space-1);
+}
+
+/* 界面材质三档：与明暗分段垂直堆叠，间隔 6px；三段等分 364px 卡片内宽，
+   最长的「液态玻璃 / 柔光玻璃」也能和 14px 图标同一行放下（不换行、不溢出）。 */
+.ctl-material {
+  margin-top: var(--space-2);
+}
+
+.ctl-material button {
+  height: 28px;
+  padding: 0 2px;
+  font-size: 11.5px;
+}
+
+/* ---- 多屏开关（副屏顶栏 / 副屏 Dock） ---- */
+
+.ctl-multi-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ctl-multi-item {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+}
+
+.ctl-multi-label {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctl-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--track);
+  border: 1px solid var(--border);
+  transition: background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.ctl-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+
+.ctl-switch.on {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.ctl-switch.on::after {
+  transform: translateX(14px);
+  background: #fff;
+}
+
+.ctl-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ctl-switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---- 音量 / 亮度滑条 ---- */
+
+.ctl-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 32px;
+}
+
+.ctl-slider-row + .ctl-slider-row {
+  margin-top: 4px;
+}
+
+.ctl-sl-ico {
+  flex: none;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+
+.ctl-sl-ico svg {
+  display: block;
+}
+
+.ctl-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  outline: none;
+}
+
+/* 轨道盒高 18px，用 background-size 画 5px 高的居中细条，滑块与轨道垂直居中 */
+.ctl-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    var(--accent) var(--pct, 50%),
+    var(--track) var(--pct, 50%)
+  );
+  background-size: 100% 6px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.ctl-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 3px; /* (20 - 14) / 2 */
+  border: none;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 3px var(--shadow-icon);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.ctl-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+
+.ctl-slider:active::-webkit-slider-thumb {
+  transform: scale(1.14);
+}
+
+.ctl-slider:disabled {
+  opacity: 0.4;
+}
+
+.ctl-pct {
+  flex: none;
+  width: 32px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctl-mute {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.ctl-mute svg {
+  display: block;
+}
+
+.ctl-mute:hover {
+  background: var(--hover);
+}
+
+.ctl-mute.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---- 电池行 + 设置/锁屏/电源 ---- */
+
+.ctl-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.ctl-bat {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 11px;
+  border: 1px solid var(--text-dim);
+  border-radius: 3.5px;
+}
+
+.ctl-bat::after {
+  content: "";
+  position: absolute;
+  right: -4px;
+  top: 2px;
+  width: 2px;
+  height: 5px;
+  border-radius: 0 1px 1px 0;
+  background: var(--text-dim);
+}
+
+.ctl-bat-fill {
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  bottom: 1px;
+  width: 50%;
+  border-radius: 2px;
+  background: var(--text);
+  transition: width var(--dur-base) var(--ease), background-color var(--dur-base) var(--ease);
+}
+
+.ctl-bat-fill.low {
+  background: var(--danger);
+}
+
+.ctl-bat-fill.charging {
+  background: var(--ok);
+}
+
+.ctl-bat-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctl-actions {
+  flex: none;
+  display: flex;
+  gap: var(--space-1);
+}
+
+.ctl-action {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--hover);
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.ctl-action:hover {
+  background: var(--hover-strong);
+}
+
+.ctl-action.open {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ctl-action-ico {
+  display: flex;
+  opacity: 0.85;
+}
+
+.ctl-action-ico svg {
+  display: block;
+}
+
+/* ---- 电源菜单（睡眠 / 关机 / 重启 / 注销） ---- */
+
+.ctl-power-menu {
+  position: absolute;
+  right: var(--space-5);
+  bottom: 56px;
+  min-width: 124px;
+  padding: 4px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  z-index: 30;
+  animation: ctl-pop var(--dur-fast) var(--ease);
+}
+
+@keyframes ctl-pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ctl-power-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  font-size: 12px;
+  color: var(--text);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.ctl-power-menu button:hover {
+  background: var(--hover);
+}
+
+/* 关机/重启二次确认态 */
+.ctl-power-menu button.confirm {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ==================== 控制中心：连接子视图容器 ==================== */
+
+.ctl-sub {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==================== 连接子视图（Wi-Fi / 蓝牙） ==================== */
+
+.conn-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.conn-back {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 12px 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--hover);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.conn-back:hover {
+  background: var(--hover-strong);
+}
+
+.conn-back svg {
+  display: block;
+}
+
+.conn-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conn-action {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.conn-action:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.conn-status {
+  flex: none;
+  min-height: 16px;
+  margin-bottom: var(--space-1);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.conn-hint {
+  flex: none;
+  margin-bottom: var(--space-1);
+  font-size: 10.5px;
+  color: var(--danger);
+}
+
+.conn-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.conn-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.conn-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.conn-row:hover {
+  background: var(--surface-inset);
+}
+
+.conn-row.connected {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+}
+
+/* 信号 4 格（宽度/高度固定，颜色随状态） */
+.conn-signal {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 13px;
+}
+
+.conn-bar {
+  width: 3px;
+  border-radius: 1.5px;
+  background: var(--track);
+}
+
+.conn-bar:nth-child(1) {
+  height: 4px;
+}
+
+.conn-bar:nth-child(2) {
+  height: 7px;
+}
+
+.conn-bar:nth-child(3) {
+  height: 10px;
+}
+
+.conn-bar:nth-child(4) {
+  height: 13px;
+}
+
+.conn-bar.on {
+  background: var(--text);
+}
+
+.conn-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conn-lock {
+  flex: none;
+  display: flex;
+  align-items: center;
+  color: var(--text-faint);
+}
+
+.conn-lock svg {
+  display: block;
+}
+
+.conn-badge {
+  flex: none;
+  height: 15px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 15px;
+}
+
+.conn-right {
+  flex: none;
+  margin-left: auto;
+}
+
+.conn-btn {
+  height: 24px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--hover);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.conn-btn:hover {
+  background: var(--hover-strong);
+}
+
+.conn-btn.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.conn-btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.conn-btn.danger {
+  background: transparent;
+  color: var(--danger);
+}
+
+.conn-btn.danger:hover {
+  background: var(--hover);
+}
+
+/* 行内密码输入 */
+.conn-pwd {
+  flex: 0 0 100%;
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.conn-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-inset);
+  color: var(--text);
+  font-size: 11.5px;
+  font-family: inherit;
+}
+
+.conn-input::placeholder {
+  color: var(--text-faint);
+}
+
+.conn-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.conn-empty {
+  padding: 24px 8px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* ==================== 通知中心：双栏骨架 ==================== */
+
+.ntf-cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  /* 左栏吃剩余宽度，右栏固定 340（日历 7 列，约 44px/格） */
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: var(--space-5);
+}
+
+.ntf-left,
+.ntf-right {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- 左栏：大时钟 + 日期 ---- */
+
+.ntf-head {
+  flex: none;
+  padding: 0 var(--space-1) var(--space-4);
+}
+
+.ntf-clock {
+  font-size: 40px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.ntf-date {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---- 左栏：分组堆叠通知列表 ---- */
+
+.ntf-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-right: var(--space-1);
+}
+
+/* 空态 / 读取失败 */
+.ntf-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: 32px var(--space-4);
+  text-align: center;
+}
+
+.ntf-empty-ico {
+  display: flex;
+  color: var(--text-faint);
+  opacity: 0.65;
+}
+
+.ntf-empty-text {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* 分组容器：堆叠层挂在它下面 */
+.ntf-group {
+  position: relative;
+  flex: none;
+}
+
+.ntf-group.stacked-1 {
+  margin-bottom: 8px;
+}
+
+.ntf-group.stacked-2 {
+  margin-bottom: 12px;
+}
+
+/* 堆叠层：像「一叠卡片」而不像阴影 —— 左右内缩 8/16、底部露出 4/8、
+   可见 1px 边框 + 低透明度投影，亮/暗主题都能看出层次 */
+.ntf-layer {
+  position: absolute;
+  top: 2px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow-icon) 55%, transparent);
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* 第一层：左右内缩 8px，底部露出 4px */
+.ntf-layer-1 {
+  left: 8px;
+  right: 8px;
+  top: 4px;
+  bottom: -4px;
+}
+
+/* 第二层：左右内缩 16px，底部再低 5px（4px 露出 + 1px 层间隙） */
+.ntf-layer-2 {
+  left: 16px;
+  right: 16px;
+  top: 6px;
+  bottom: -9px;
+  background: var(--surface-3);
+}
+
+/* 展开时堆叠层让位给通知明细 */
+.ntf-group.expanded .ntf-layer {
+  display: none;
+}
+
+.ntf-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.ntf-card:hover {
+  background-image: linear-gradient(var(--hover), var(--hover));
+  border-color: var(--border-strong);
+}
+
+/* 右上角「打开应用」：卡片的兄弟节点（不能嵌在 button 里）。
+   常驻低透明度，hover / focus 时完全显现；.ntf-meta 预留右侧空间避免压住时间。 */
+.ntf-open-app {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  opacity: 0.55;
+  transition: opacity var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.ntf-open-app svg {
+  display: block;
+  pointer-events: none;
+}
+
+.ntf-open-app:hover {
+  background: var(--hover-strong);
+  color: var(--text);
+  border-color: var(--border-strong);
+  opacity: 1;
+}
+
+.ntf-open-app:focus-visible {
+  opacity: 1;
+}
+
+.ntf-group.has-launch .ntf-meta {
+  padding-right: 24px;
+}
+
+/* 应用图标可点：hover 给出焦点暗示（图标在卡片 button 内，点击由委托处理） */
+.ntf-icon-open {
+  cursor: pointer;
+  transition: box-shadow var(--dur-fast) var(--ease);
+}
+
+.ntf-icon-open:hover {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* 整组 hover 上浮 1px（transform 不影响布局；展开时同样适用） */
+.ntf-group {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.ntf-group:hover {
+  transform: translateY(-1px);
+}
+
+/* 真实应用图标 34px；缺图标时退化为首字母色块 */
+.ntf-icon {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-inset);
+}
+
+.ntf-icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ntf-letter {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--on-accent);
+}
+
+.ntf-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ntf-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ntf-app {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 条数徽标 */
+/* 数量徽标：一眼看出这是堆叠（「3 条」） */
+.ntf-count {
+  flex: none;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* 未读点：比本次打开前的已读水位更新 */
+.ntf-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.ntf-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.ntf-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ntf-body {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-dim);
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 展开的通知明细 */
+.ntf-items {
+  margin: var(--space-3) 0 0 var(--space-1);
+  padding-left: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  animation: ntf-open var(--dur-base) var(--ease);
+}
+
+@keyframes ntf-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ntf-item {
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  border-left: 2px solid var(--border-strong);
+}
+
+/* 可点条目：点击 / Enter 打开来源应用 */
+.ntf-item-clickable {
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.ntf-item-clickable:hover {
+  background: var(--surface-3);
+  border-left-color: var(--accent);
+}
+
+.ntf-item-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ntf-item-body {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ntf-item-time {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* ---- 打开应用失败提示（与底部操作栏同宽，3s 自动消失） ---- */
+
+.ntf-error {
+  flex: none;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--hover);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--danger);
+  word-break: break-word;
+}
+
+/* ---- 底部通栏按钮 ---- */
+
+.ntf-actions {
+  flex: none;
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.ntf-action {
+  flex: 1 1 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.ntf-action:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.ntf-action:active {
+  background: var(--hover-strong);
+}
+
+.ntf-action-ico {
+  display: flex;
+  opacity: 0.85;
+}
+
+.ntf-action-ico svg {
+  display: block;
+}
+
+/* ==================== 通知中心：右栏（月历 + 媒体卡） ==================== */
+
+.ntf-right {
+  gap: var(--space-3);
+}
+
+/* ---- 中文月历（节假日 / 调休标记） ---- */
+
+.ntf-cal {
+  flex: none;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-1);
+}
+
+.cal-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 月份标题后的干支生肖（小字；用 --text-dim 保证对比度 ≥4.5） */
+.cal-ganzhi {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.cal-nav {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-dim);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.cal-nav:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  row-gap: 1px;
+}
+
+.cal-wd {
+  padding: 4px 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* 单元格：今日 accent 胶囊日期 + 节日短名 / 「班」角标 */
+.cal-day {
+  position: relative;
+  height: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.cal-day-num {
+  min-width: 24px;
+  height: 20px;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+/* 前后月溢出日期淡化（§4.7：opacity .38） */
+.cal-day.other .cal-day-num {
+  opacity: 0.38;
+}
+
+/* 日期格 hover（今日已有 accent 胶囊，不覆盖） */
+.cal-day:not(.today):hover .cal-day-num {
+  background: var(--surface-inset);
+  border-radius: 8px;
+}
+
+/* 法定节假日（休息日）：红字 + 节日短名 */
+.cal-day.is-off .cal-day-num {
+  color: var(--danger);
+}
+
+.cal-holiday {
+  max-width: 100%;
+  font-size: 9px;
+  line-height: 11px;
+  color: var(--danger);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 第二行农历（节日优先渲染，无节日时显示）：初一显示月名，其余显示日名 */
+.cal-lunar {
+  max-width: 100%;
+  font-size: 9px;
+  line-height: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 非本月日期：农历同步淡化 */
+.cal-day.other .cal-lunar {
+  opacity: 0.38;
+}
+
+/* 今天：accent 胶囊；若同时是节假日，节日名仍保持红字语义 */
+.cal-day.today .cal-day-num {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+.cal-day.today .cal-holiday {
+  color: var(--danger);
+}
+
+/* 调休上班：右下角琥珀「班」角标 */
+.cal-work {
+  position: absolute;
+  right: 1px;
+  bottom: 2px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--hover-strong);
+  color: var(--warn);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+}
+
+/* ---- 媒体卡（64px 封面 + 页内模糊封面底） ---- */
+
+.ntf-media {
+  flex: none;
+  margin-top: auto; /* 贴右栏底部 */
+}
+
+.med {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* 页内模糊封面底：取封面自身放大模糊，低透明度铺在卡片底部 */
+.med-bg {
+  position: absolute;
+  inset: -25%;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  filter: blur(18px) saturate(1.1);
+  opacity: 0;
+  transform: scale(1.08);
+  transition: opacity var(--dur-base) var(--ease);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.med-bg.on {
+  opacity: 0.4;
+}
+
+/* 模糊封面底上再压一层表面遮罩（§4.8「40% 遮罩」）：
+   亮色主题下避免粉底压住时间/歌手文字，暗色主题下同样收敛饱和 */
+.med::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-2) 50%, transparent),
+    color-mix(in srgb, var(--surface-2) 72%, transparent)
+  );
+  z-index: 0;
+  pointer-events: none;
+}
+
+.med > *:not(.med-bg) {
+  position: relative;
+  z-index: 1;
+}
+
+.med-error {
+  font-size: 10.5px;
+  color: var(--danger);
+}
+
+.med-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.med-cover {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-inset);
+  color: var(--text-faint);
+  box-shadow: var(--shadow-card);
+}
+
+.med-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.med-cover.empty svg {
+  opacity: 0.7;
+}
+
+.med-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.med-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.med-artist {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.med-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.med-bar {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--track);
+  overflow: hidden;
+}
+
+.med-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width 0.3s linear;
+}
+
+.med-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 圆形控制键：中间主键 accent 实心 */
+.med-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+}
+
+.med-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text);
+  background: var(--hover);
+  transition: background-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.med-btn svg {
+  display: block;
+}
+
+.med-btn:hover {
+  background: var(--hover-strong);
+}
+
+.med-btn:active {
+  transform: scale(0.94);
+}
+
+.med-btn-main {
+  width: 40px;
+  height: 40px;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.med-btn-main:hover {
+  background: var(--accent-hover);
+}
+
+/* ==================== 窄屏兜底 ==================== */
+
+@media (max-width: 920px) {
+  .ntf-cols {
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: var(--space-4);
+  }
+}
+
+@media (max-width: 720px) {
+  .panel {
+    left: 0;
+    right: 0;
+    margin: 0 auto;
+    max-width: calc(100vw - var(--space-4));
+  }
+
+  .panel-notifications,
+  .panel-control {
+    width: 100%;
+  }
+}

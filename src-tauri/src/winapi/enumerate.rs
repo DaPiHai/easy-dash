@@ -2,7 +2,7 @@
 #![allow(non_upper_case_globals)]
 
 use serde::Serialize;
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, IsIconic, IsWindow, IsWindowVisible,
@@ -72,9 +72,8 @@ fn cloaked_value(hwnd: HWND) -> u32 {
     }
 }
 
-/// 窗口物理尺寸（优先 DWM 扩展边框，排除不可见阴影边框）
-fn window_size(hwnd: HWND) -> (i32, i32) {
-    use windows::Win32::Foundation::RECT;
+/// 窗口屏幕矩形（优先 DWM 扩展边框，排除不可见阴影边框）。
+fn window_rect(hwnd: HWND) -> Option<RECT> {
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
     let mut rect = RECT::default();
     let hr = unsafe {
@@ -90,7 +89,14 @@ fn window_size(hwnd: HWND) -> (i32, i32) {
             let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect);
         }
     }
-    (rect.right - rect.left, rect.bottom - rect.top)
+    (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
+}
+
+/// 窗口物理尺寸（优先 DWM 扩展边框，排除不可见阴影边框）
+fn window_size(hwnd: HWND) -> (i32, i32) {
+    window_rect(hwnd)
+        .map(|r| (r.right - r.left, r.bottom - r.top))
+        .unwrap_or((0, 0))
 }
 
 fn accept(hwnd: HWND, own_pid: u32) -> bool {
@@ -199,7 +205,39 @@ pub fn list_windows(own_pid: u32, st: &AppState) -> Vec<WinEntry> {
     out
 }
 
-/// 窗口图标 + 分组 AUMID + 应用名（纯缓存读取，缺失时把窗口交给图标工作线程）。
+/// 普通可见顶层窗口的屏幕物理矩形（Dock 智能隐藏的遮挡来源）。
+///
+/// 与 `list_windows` 的差别：这里只需要几何，不读标题/图标/AUMID，也不保留
+/// cloaked=2 的挂起窗口（其他虚拟桌面/失焦 UWP 视觉上不在当前屏幕，不能用来
+/// 触发 Dock 隐藏）；最小化窗口的 `GetWindowRect` 是无效值，直接排除。
+pub fn normal_window_rects(own_pid: u32) -> Vec<RECT> {
+    let mut hwnds: Vec<HWND> = Vec::new();
+    let mut ctx = CollectCtx {
+        hwnds: &mut hwnds,
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_cb), LPARAM(&mut ctx as *mut _ as isize));
+    }
+
+    let mut out = Vec::new();
+    for hwnd in hwnds {
+        if !accept(hwnd, own_pid) {
+            continue;
+        }
+        if unsafe { IsIconic(hwnd).as_bool() } {
+            continue;
+        }
+        if cloaked_value(hwnd) != 0 {
+            continue;
+        }
+        if let Some(rect) = window_rect(hwnd) {
+            out.push(rect);
+        }
+    }
+    out
+}
+
+
 /// 分组 AUMID 只对 UWP 宿主窗口暴露（ApplicationFrameWindow /
 /// ApplicationFrameHost）：多个 UWP 应用共用宿主进程，必须按 AUMID 拆分；
 /// 桌面应用（浏览器每个窗口/配置文件都可能带 AUMID）必须按 exe 分组。

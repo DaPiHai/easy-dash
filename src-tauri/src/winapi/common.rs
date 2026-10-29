@@ -2,15 +2,21 @@
 #![allow(non_upper_case_globals)]
 
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetWindowTextW, GetWindowLongPtrW, GetWindowThreadProcessId, GWL_EXSTYLE,
-    WS_EX_TOOLWINDOW,
+    GetClassNameW, GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+    GWL_EXSTYLE, WS_EX_TOOLWINDOW,
 };
 use windows::core::PWSTR;
+
+/// 顶栏常态高度（逻辑像素），与 commands::BAR_H / panels.js 保持一致
+pub const TOPBAR_LOGICAL_HEIGHT: f64 = 32.0;
 
 pub fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -97,6 +103,57 @@ pub fn is_process_elevated() -> bool {
 pub fn tauri_hwnd(win: &tauri::WebviewWindow) -> Option<HWND> {
     let h = win.hwnd().ok()?;
     Some(HWND(h.0))
+}
+
+/// 直接以物理像素设置窗口外框（同步 SetWindowPos）。
+///
+/// Tauri/tao 的 `set_size`/`set_position` 走 `SWP_ASYNCWINDOWPOS` + 事件循环消息，
+/// 在「隐藏窗口先移动/改尺寸再 show」的时序下可能被 show 抢先生效，表现为窗口
+/// 仍停留在初始尺寸（多屏概览/应用中心踩过）。这里直接同步设置物理矩形。
+pub fn set_window_rect(win: &tauri::WebviewWindow, x: i32, y: i32, width: u32, height: u32) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOREPOSITION, SWP_NOZORDER,
+    };
+    let Some(hwnd) = tauri_hwnd(win) else {
+        return;
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            x,
+            y,
+            width.max(1) as i32,
+            height.max(1) as i32,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREPOSITION,
+        );
+    }
+}
+
+/// Tauri 窗口的屏幕物理矩形（`GetWindowRect`，含窗口自身边距）。
+/// Dock 智能隐藏用它做遮挡判定与底边唤出命中。
+pub fn window_physical_rect(win: &tauri::WebviewWindow) -> Option<RECT> {
+    let hwnd = tauri_hwnd(win)?;
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
+}
+
+/// 窗口客户区逻辑像素（CSS px）→ 屏幕物理像素。
+/// 多屏/混合 DPI 下不能假设顶栏在 (0,0)，必须用 ClientToScreen 取真实屏幕坐标。
+pub fn client_to_screen_logical(
+    win: &tauri::WebviewWindow,
+    x_logical: f64,
+    y_logical: f64,
+) -> Option<(i32, i32)> {
+    let hwnd = tauri_hwnd(win)?;
+    let scale = super::monitors::dpi_scale(hwnd);
+    let mut pt = POINT {
+        x: (x_logical * scale).round() as i32,
+        y: (y_logical * scale).round() as i32,
+    };
+    let ok = unsafe { ClientToScreen(hwnd, &mut pt) };
+    ok.as_bool().then_some((pt.x, pt.y))
 }
 
 /// 去掉 Win11 DWM 给所有顶层窗口自动绘制的浅色边框与圆角。

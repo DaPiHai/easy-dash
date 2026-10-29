@@ -122,3 +122,43 @@ pub fn set(percent: u32) -> Result<(), String> {
         None => Err("未找到支持 DDC/CI 亮度控制的显示器".into()),
     }
 }
+
+/// 把目标亮度夹取到 0..=100（纯函数，便于单测）。
+pub fn clamp_percent(value: i32) -> u32 {
+    value.clamp(0, 100) as u32
+}
+
+/// 相对调节亮度（滚轮）：读当前值 → 夹取 → 设置。
+pub fn nudge(delta: i32) -> Result<u32, String> {
+    let current = get().ok_or_else(|| String::from("未找到支持 DDC/CI 亮度控制的显示器"))?;
+    let next = clamp_percent(current as i32 + delta);
+    set(next)?;
+    Ok(next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_percent_stays_in_range() {
+        assert_eq!(clamp_percent(-30), 0);
+        assert_eq!(clamp_percent(0), 0);
+        assert_eq!(clamp_percent(42), 42);
+        assert_eq!(clamp_percent(100), 100);
+        assert_eq!(clamp_percent(300), 100);
+        assert_eq!(clamp_percent(i32::MIN), 0);
+    }
+
+    #[test]
+    fn normalize_and_denormalize_round_trip() {
+        assert_eq!(normalize(50, 0, 100), 50);
+        assert_eq!(denormalize(50, 0, 100), 50);
+        assert_eq!(normalize(0, 20, 80), 0);
+        assert_eq!(normalize(80, 20, 80), 100);
+        assert_eq!(denormalize(100, 20, 80), 80);
+        // 异常范围不 panic、不除零
+        assert_eq!(normalize(30, 50, 50), 30);
+        assert_eq!(denormalize(30, 50, 50), 30);
+    }
+}

@@ -1,9 +1,21 @@
-// 应用中心（全屏应用网格）：搜索 / 键盘导航 / 启动 / 拖拽排序 / 导入应用。
+// 应用中心（全屏应用网格 + 分页）：搜索 / 键盘导航 / 启动 / 拖拽排序 / 导入应用。
 //
 // 关闭时机（重要）：只在 Esc、点击 #backdrop 空白、启动成功（后端自动隐藏）时关闭。
 // **不监听 window.blur** —— 应用中心打开时顶栏/Dock 在其上层（后端会把它们重新置顶），
 // 点 Dock 九点格会先让本窗口失焦；若 blur 抢先 close，随后 Dock 的 toggle_app_center
 // 又会重新打开，表现为「关不掉」。其它页面切换（活动概览/顶栏活动）由后端统一处理。
+//
+// 分页模型（#ac-scroll 不再纵向滚动）：
+//   每页容量 pageSize = cols × rows，cols 由 grid-template-columns 计算样式得到，
+//   rows 由 #ac-scroll 视口高度、卡片固定高度 104px、行间距 8px 推算，只渲染当前页。
+//   翻页入口：滚轮 / 分页器 / PageUp/PageDown/Home/End / 方向键越过页边界 / 拖拽到上下边缘悬停。
+//
+// 外观：import theme.js 让本窗口也能响应 theme-changed / config-changed。
+// （此前只靠 head 内联脚本读一次缓存，运行中切浅色/深色或换材质时应用中心不会跟着变。）
+import "./theme.js";
+import "./cursor-glow.js";
+import "./glass.js";
+import { beginSurfaceOpen } from "./surface-open.js";
 import { invoke, invokeRetry, listen, escapeHtml } from "./api.js";
 
 // 与 Dock 一致的字母占位配色
@@ -13,13 +25,23 @@ const LETTER_COLORS = ["#3584e4", "#e66100", "#2ec27e", "#9141ac", "#e01b24", "#
 const DRAG_CLICK_SUPPRESS_MS = 300;
 /** 拖拽判定阈值（像素）：超过才算拖动，否则按点击处理 */
 const APP_DRAG_THRESHOLD = 6;
-/** 自动滚动：边缘感应区 & 步长 */
-const AUTO_SCROLL_ZONE = 60;
-const AUTO_SCROLL_STEP = 18;
+/** 卡片高度 / 行间距：与 launcher.css 的 .ac-grid 保持一致（计算样式取不到时兜底） */
+const PAGE_ROW_HEIGHT = 104;
+const PAGE_ROW_GAP = 8;
+/** 拖拽到视口上下边缘的感应区高度与悬停自动翻页时长 */
+const DRAG_EDGE_ZONE = 64;
+const DRAG_EDGE_HOLD_MS = 550;
+/** 滚轮翻页：累计阈值、冷却时间、空闲清零时间 */
+const WHEEL_THRESHOLD = 28;
+const WHEEL_COOLDOWN_MS = 380;
+const WHEEL_IDLE_RESET_MS = 260;
+/** 翻页动画时长（与 launcher.css 的 @keyframes 一致，仅用于清理 class） */
+const PAGE_ANIM_MS = 200;
 
+// ---------- 列表状态 ----------
 let apps = []; // 全量应用（后端顺序，拖拽排序改的就是它）
 let filtered = []; // 当前搜索结果
-let selectedIndex = -1; // 键盘选中项（filtered 下标）
+let selectedIndex = -1; // 键盘选中项（filtered 全局下标）
 let query = ""; // 当前搜索词（小写、已 trim）
 let loading = false; // 首次/重试加载中
 let loadFailed = false; // 最近一次加载失败
@@ -29,11 +51,23 @@ let refreshTimer = null; // 刷新兜底恢复
 let errorTimer = null; // 启动失败提示
 let listening = false; // 事件监听是否已注册
 
+// ---------- 分页状态 ----------
+let page = 0; // 当前页（0 起）
+let pageSize = 12; // 每页卡片数（每次 render 按布局重算）
+let pageCount = 1; // 总页数
+let cols = 4; // 当前列数（方向键上下移动步长）
+let pageAnimTimer = null; // 翻页动画 class 清理
+let relayoutRaf = 0; // resize 合并到一帧
+let wheelAccum = 0; // 滚轮累计位移
+let wheelLastFlipAt = 0; // 上次翻页时间（冷却）
+let wheelResetTimer = null; // 滚轮空闲清零
+
 // ---------- 拖拽排序状态 ----------
-let dragState = null; // { el, id, pointerId, startX, startY, lastX, lastY, lastMoveAt, moved, ghost, grabX, grabY }
+// { id, pointerId, captureEl, el, startX, startY, lastX, lastY, moved, ghost,
+//   grabX, grabY, tempIndex, edgeDir }
+let dragState = null;
 let dragClickGuard = 0; // 拖拽结束后抑制 click 的截止时间
-let autoScrollTimer = null; // 边缘自动滚动定时器
-let autoScrollDir = 0; // -1 上 / 1 下 / 0 停
+let edgeTimer = null; // 边缘悬停自动翻页定时器
 let pendingAppsReload = false; // 拖拽期间收到 apps-changed，结束后补一次刷新
 
 // ---------- 导入 / 右键菜单状态 ----------
@@ -56,6 +90,11 @@ const importLabel = document.getElementById("ac-import-label");
 const toastEl = document.getElementById("ac-toast");
 const menuEl = document.getElementById("ac-menu");
 const dragHintEl = document.getElementById("ac-drag-hint");
+const pagerEl = document.getElementById("ac-pager");
+const pagerPrevEl = document.getElementById("ac-pager-prev");
+const pagerNextEl = document.getElementById("ac-pager-next");
+const pagerDotsEl = document.getElementById("ac-pager-dots");
+const pagerCountEl = document.getElementById("ac-pager-count");
 
 // ---------- 小工具 ----------
 
@@ -67,6 +106,10 @@ function errText(e) {
   } catch (_) {
     return "未知错误";
   }
+}
+
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
 }
 
 function focusSearch() {
@@ -100,6 +143,95 @@ function closeCenter() {
   }
 }
 
+// ---------- 布局 / 分页 ----------
+
+/** 读取网格列数、行数、每页容量（行高 104px、行间距 8px，来自计算样式） */
+function measureGrid() {
+  let columns = 1;
+  let gapY = PAGE_ROW_GAP;
+  let rowH = PAGE_ROW_HEIGHT;
+  try {
+    const cs = getComputedStyle(gridEl);
+    const tpl = cs.gridTemplateColumns;
+    if (tpl && tpl !== "none") {
+      const n = tpl.trim().split(/\s+/).filter(Boolean).length;
+      if (n > 0) columns = n;
+    }
+    const gap = parseFloat(cs.rowGap);
+    if (Number.isFinite(gap)) gapY = gap;
+    const auto = parseFloat(cs.gridAutoRows);
+    if (Number.isFinite(auto) && auto > 0) rowH = auto;
+  } catch (e) {
+    /* 计算样式取不到时用默认值 */
+  }
+  const viewportH = Math.max(0, scrollEl.clientHeight);
+  const rows = Math.max(1, Math.floor((viewportH + gapY) / (rowH + gapY)));
+  return { columns, rows, pageSize: Math.max(1, columns * rows) };
+}
+
+/**
+ * 重算分页容量并夹取页码。
+ * 先按“分页器隐藏”的最大高度试算：确实需要多页时才显示分页器，再按压缩后的高度重算，
+ * 避免分页器自身占位导致「本来一页能放下却显示两页」。
+ */
+function computePageModel() {
+  if (pagerEl) pagerEl.classList.add("hidden");
+  let metrics = measureGrid();
+  let count = Math.max(1, Math.ceil(filtered.length / metrics.pageSize));
+  if (count > 1 && pagerEl) {
+    pagerEl.classList.remove("hidden");
+    metrics = measureGrid();
+    count = Math.max(1, Math.ceil(filtered.length / metrics.pageSize));
+    if (count <= 1) pagerEl.classList.add("hidden");
+  }
+  cols = metrics.columns;
+  pageSize = metrics.pageSize;
+  pageCount = count;
+  page = clamp(page, 0, pageCount - 1);
+}
+
+function animatePage(dir) {
+  if (!dir) return;
+  const cls = dir === "next" ? "page-next" : "page-prev";
+  gridEl.classList.remove("page-next", "page-prev");
+  // 强制重排，保证同一方向的连续翻页也能重启动画
+  void gridEl.offsetWidth;
+  gridEl.classList.add(cls);
+  if (pageAnimTimer) clearTimeout(pageAnimTimer);
+  pageAnimTimer = setTimeout(() => {
+    pageAnimTimer = null;
+    gridEl.classList.remove("page-next", "page-prev");
+  }, PAGE_ANIM_MS + 40);
+}
+
+/** 翻到指定页（滚轮 / 分页器 / PageUp/PageDown 用）；返回是否真的翻页 */
+function goPage(target) {
+  if (!filtered.length || pageCount <= 1) return false;
+  const t = clamp(target, 0, pageCount - 1);
+  if (t === page) return false;
+  const dir = t > page ? "next" : "prev";
+  page = t;
+  // 让选中项落到新页，保证 Enter / 方向键始终有落点
+  const start = page * pageSize;
+  const end = Math.min(filtered.length, start + pageSize);
+  if (selectedIndex < start || selectedIndex >= end) selectedIndex = start;
+  render();
+  animatePage(dir);
+  return true;
+}
+
+/** 跳到指定全局下标所在页（Home / End 用） */
+function jumpTo(index) {
+  if (!filtered.length) return;
+  const targetIndex = clamp(index, 0, filtered.length - 1);
+  const targetPage = clamp(Math.floor(targetIndex / pageSize), 0, pageCount - 1);
+  const dir = targetPage === page ? null : targetPage > page ? "next" : "prev";
+  selectedIndex = targetIndex;
+  page = targetPage;
+  render();
+  if (dir) animatePage(dir);
+}
+
 // ---------- 渲染 ----------
 
 /** 按当前搜索词重算 filtered，并保留（可选）选中项的 id */
@@ -117,20 +249,85 @@ function rebuildFiltered(preserveId) {
   render();
 }
 
-function render() {
-  renderStatus();
-  gridEl.innerHTML = filtered.map(cardHtml).join("");
+/**
+ * 当前页要渲染的卡片（全局下标）。
+ * 拖拽中会把被拖卡片按「目标全局下标 tempIndex」插回预览顺序，再取本页窗口，
+ * 保证翻页后 ghost 与半透明源项连续，且松手落点与预览完全一致。
+ *
+ * 预览顺序 preview = filtered 去掉被拖卡片后再把被拖卡片插到 tempIndex：
+ *   preview[i] = (i < t ? rest[i] : i > t ? rest[i-1] : 被拖卡片)
+ * 松手时 t = 页起点 + DOM 下标，正好是插入 apps 的目标位置。
+ */
+function buildPageItems() {
+  const start = page * pageSize;
+  const end = Math.min(filtered.length, start + pageSize);
 
-  if (query) {
-    countEl.textContent = filtered.length + " / " + apps.length + " 个应用";
-  } else {
-    countEl.textContent = apps.length ? apps.length + " 个应用" : "";
+  const plain = () => {
+    const out = [];
+    for (let i = start; i < end; i++) out.push({ app: filtered[i], index: i });
+    return out;
+  };
+
+  if (!dragState || !dragState.moved) return plain();
+
+  const dragId = String(dragState.id);
+  const indexById = new Map();
+  for (let i = 0; i < filtered.length; i++) indexById.set(String(filtered[i].id), i);
+  const draggedIdx = indexById.has(dragId) ? indexById.get(dragId) : -1;
+  if (draggedIdx < 0) return plain();
+
+  const draggedApp = filtered[draggedIdx];
+  // rest：去掉被拖卡片后的顺序（搜索态禁用拖拽，此时 filtered 与 apps 同序）
+  const rest = filtered.filter((a) => String(a.id) !== dragId);
+
+  let t = dragState.tempIndex;
+  if (!Number.isInteger(t)) t = draggedIdx;
+  t = clamp(t, 0, filtered.length - 1);
+  // 防御：确保被拖卡片一定落在当前页窗口内（否则半透明源项会消失）
+  if (end > start) t = clamp(t, start, end - 1);
+  dragState.tempIndex = t;
+
+  const out = [];
+  for (let i = start; i < end; i++) {
+    let app;
+    if (i === t) app = draggedApp;
+    else if (i < t) app = rest[i];
+    else app = rest[i - 1];
+    if (!app) app = draggedApp; // 防御：数据异常时不丢卡片
+    out.push({ app, index: indexById.get(String(app.id)) });
+  }
+  return out;
+}
+
+function render() {
+  computePageModel();
+
+  if (!filtered.length) {
+    selectedIndex = -1;
+  } else if (selectedIndex > filtered.length - 1) {
+    selectedIndex = filtered.length - 1;
   }
 
-  // 搜索时禁止拖拽排序，顺手把提示文案切换掉
-  if (dragHintEl) dragHintEl.textContent = query ? " · 搜索时不可拖拽排序" : " · 拖拽排序";
+  renderStatus();
 
-  updateSelectionDom(false);
+  const draggingId = dragState && dragState.moved ? String(dragState.id) : "";
+  const items = buildPageItems();
+  gridEl.innerHTML = items
+    .map((it) => cardHtml(it.app, it.index, draggingId !== "" && String(it.app.id) === draggingId))
+    .join("");
+
+  // 打开动画的错峰序号（motion.css §11 用；上限 12 档，避免长列表拖尾）
+  const cards = gridEl.children;
+  for (let i = 0; i < cards.length; i++) {
+    cards[i].style.setProperty("--enter-i", String(Math.min(i, 12)));
+  }
+
+  updateCount();
+  updateHint();
+  updateSelectionDom();
+  renderPager();
+
+  if (dragState && dragState.moved) bindDragSource();
 }
 
 /** 加载态 / 失败态（带重试）/ 搜索空态 */
@@ -150,7 +347,7 @@ function renderStatus() {
   statusEl.classList.toggle("hidden", !html);
 }
 
-function cardHtml(app, index) {
+function cardHtml(app, index, isDragSource) {
   const name = String(app.name || "未命名应用");
   const id = String(app.id || "");
   let icon;
@@ -169,7 +366,8 @@ function cardHtml(app, index) {
   const cls =
     "ac-app" +
     (index === selectedIndex ? " selected" : "") +
-    (app.kind === "import" ? " imported" : "");
+    (app.kind === "import" ? " imported" : "") +
+    (isDragSource ? " drag-src" : "");
   return (
     '<button class="' +
     cls +
@@ -189,26 +387,185 @@ function cardHtml(app, index) {
   );
 }
 
-function updateSelectionDom(scroll) {
-  const cards = gridEl.children;
-  for (let i = 0; i < cards.length; i++) {
-    cards[i].classList.toggle("selected", i === selectedIndex);
-  }
-  if (!scroll) return;
-  const el = cards[selectedIndex];
-  if (el && typeof el.scrollIntoView === "function") {
-    el.scrollIntoView({ block: "nearest", inline: "nearest" });
+function updateCount() {
+  if (!countEl) return;
+  if (query) {
+    countEl.textContent = filtered.length + " / " + apps.length + " 个应用";
+  } else {
+    countEl.textContent = apps.length ? apps.length + " 个应用" : "";
   }
 }
 
-function selectAt(index, scroll) {
-  if (!filtered.length) {
-    selectedIndex = -1;
-    updateSelectionDom(false);
+function updateHint() {
+  if (!dragHintEl) return;
+  dragHintEl.textContent = query ? " · 搜索时不可拖拽排序" : " · 拖拽排序";
+}
+
+function updateSelectionDom() {
+  const cards = gridEl.children;
+  for (let i = 0; i < cards.length; i++) {
+    const idx = Number(cards[i].dataset.i);
+    cards[i].classList.toggle("selected", Number.isInteger(idx) && idx === selectedIndex);
+  }
+}
+
+function renderPager() {
+  if (!pagerEl) return;
+  const show = pageCount > 1 && filtered.length > 0;
+  pagerEl.classList.toggle("hidden", !show);
+  if (!show) {
+    if (pagerDotsEl) pagerDotsEl.innerHTML = "";
     return;
   }
-  selectedIndex = Math.max(0, Math.min(filtered.length - 1, index));
-  updateSelectionDom(scroll);
+  if (pagerPrevEl) pagerPrevEl.disabled = page <= 0;
+  if (pagerNextEl) pagerNextEl.disabled = page >= pageCount - 1;
+  if (pagerCountEl) pagerCountEl.textContent = page + 1 + " / " + pageCount;
+  renderDots();
+}
+
+function renderDots() {
+  if (!pagerDotsEl) return;
+  const total = pageCount;
+  const pages = [];
+  if (total <= 11) {
+    for (let i = 0; i < total; i++) pages.push(i);
+  } else {
+    // 页数很多时只展示：首尾 + 当前页附近，其余用省略号
+    const set = new Set([0, 1, total - 2, total - 1]);
+    for (let i = page - 2; i <= page + 2; i++) {
+      if (i >= 0 && i < total) set.add(i);
+    }
+    const sorted = Array.from(set).sort((a, b) => a - b);
+    let prev = -1;
+    for (const p of sorted) {
+      if (prev >= 0 && p - prev > 1) pages.push(-1);
+      pages.push(p);
+      prev = p;
+    }
+  }
+  const html = [];
+  for (const p of pages) {
+    if (p < 0) {
+      html.push('<span class="ac-dot-gap" aria-hidden="true">…</span>');
+      continue;
+    }
+    const active = p === page;
+    html.push(
+      '<button class="ac-dot' +
+        (active ? " active" : "") +
+        '" type="button" data-page="' +
+        p +
+        '"' +
+        (active ? ' aria-current="page"' : "") +
+        ' aria-label="第 ' +
+        (p + 1) +
+        ' 页" title="第 ' +
+        (p + 1) +
+        ' 页"></button>'
+    );
+  }
+  pagerDotsEl.innerHTML = html.join("");
+}
+
+// ---------- 键盘 / 滚轮 ----------
+
+/** 方向键：全局下标移动；跨页边界时自动翻页 */
+function moveSelection(key) {
+  const n = filtered.length;
+  if (!n) return;
+  const i = selectedIndex < 0 ? 0 : selectedIndex;
+  let next = i;
+  if (key === "ArrowRight") next = Math.min(n - 1, i + 1);
+  else if (key === "ArrowLeft") next = Math.max(0, i - 1);
+  else if (key === "ArrowDown") next = Math.min(n - 1, i + cols);
+  else if (key === "ArrowUp") next = Math.max(0, i - cols);
+
+  selectedIndex = next;
+  const nextPage = clamp(Math.floor(next / pageSize), 0, pageCount - 1);
+  if (nextPage !== page) {
+    const dir = nextPage > page ? "next" : "prev";
+    page = nextPage;
+    render();
+    animatePage(dir);
+  } else {
+    updateSelectionDom();
+  }
+}
+
+/** 滚轮翻页：累积 deltaY（横向优先 deltaX），超过阈值翻一页，带冷却 */
+function onWheel(e) {
+  // 固定页面不滚动：始终阻止原生滚动/缩放链
+  e.preventDefault();
+  if (dragState || menuOpen) return; // 拖拽 / 右键菜单打开时忽略
+  if (filtered.length === 0 || pageCount <= 1) return;
+
+  const dx = e.deltaX || 0;
+  const dy = e.deltaY || 0;
+  const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+  if (!delta) return;
+
+  const now = Date.now();
+  if (now - wheelLastFlipAt < WHEEL_COOLDOWN_MS) return;
+
+  wheelAccum += delta;
+  if (wheelResetTimer) clearTimeout(wheelResetTimer);
+  wheelResetTimer = setTimeout(() => {
+    wheelResetTimer = null;
+    wheelAccum = 0;
+  }, WHEEL_IDLE_RESET_MS);
+
+  if (wheelAccum >= WHEEL_THRESHOLD) {
+    wheelAccum = 0;
+    if (goPage(page + 1)) wheelLastFlipAt = now;
+  } else if (wheelAccum <= -WHEEL_THRESHOLD) {
+    wheelAccum = 0;
+    if (goPage(page - 1)) wheelLastFlipAt = now;
+  }
+}
+
+function onKeyDown(e) {
+  if (e.isComposing || e.defaultPrevented) return; // 中文输入法组词中不抢键
+  if (e.altKey || e.ctrlKey || e.metaKey) return; // 热键交给系统
+
+  const key = e.key;
+  if (key === "Escape") {
+    e.preventDefault();
+    // 拖拽中按 Esc：取消拖拽并恢复原顺序
+    if (dragState) {
+      cancelAppDrag();
+      return;
+    }
+    // 右键菜单开着时先关菜单，不关整个应用中心
+    if (menuOpen) {
+      hideAppMenu();
+      return;
+    }
+    closeCenter();
+    return;
+  }
+  if (key === "Enter") {
+    e.preventDefault();
+    const app = filtered[selectedIndex] || filtered[0];
+    if (app) launch(app);
+    return;
+  }
+  if (key === "PageDown" || key === "PageUp") {
+    if (!filtered.length) return;
+    e.preventDefault();
+    goPage(page + (key === "PageDown" ? 1 : -1));
+    return;
+  }
+  if (key === "Home" || key === "End") {
+    if (!filtered.length) return;
+    e.preventDefault();
+    jumpTo(key === "Home" ? 0 : filtered.length - 1);
+    return;
+  }
+  if (key === "ArrowUp" || key === "ArrowDown" || key === "ArrowLeft" || key === "ArrowRight") {
+    if (!filtered.length) return;
+    e.preventDefault();
+    moveSelection(key);
+  }
 }
 
 // ---------- 提示 ----------
@@ -257,8 +614,11 @@ async function loadApps(opts) {
     if (!apps.length) {
       filtered = [];
       selectedIndex = -1;
+      page = 0;
+      pageCount = 1;
       gridEl.innerHTML = "";
-      countEl.textContent = "";
+      if (countEl) countEl.textContent = "";
+      renderPager();
     }
     renderStatus();
   }
@@ -309,65 +669,6 @@ function hideLaunchError() {
   if (errorEl) {
     errorEl.textContent = "";
     errorEl.classList.add("hidden");
-  }
-}
-
-// ---------- 键盘 ----------
-
-/** 当前网格列数（响应式，由计算样式里的 grid-template-columns 得到） */
-function gridColumns() {
-  try {
-    const tpl = getComputedStyle(gridEl).gridTemplateColumns;
-    if (!tpl || tpl === "none") return 1;
-    const n = tpl.trim().split(/\s+/).filter(Boolean).length;
-    return Math.max(1, n);
-  } catch (e) {
-    return 1;
-  }
-}
-
-function moveSelection(key) {
-  const n = filtered.length;
-  if (!n) return;
-  const cols = gridColumns();
-  let i = selectedIndex < 0 ? 0 : selectedIndex;
-  if (key === "ArrowRight") i = Math.min(n - 1, i + 1);
-  else if (key === "ArrowLeft") i = Math.max(0, i - 1);
-  else if (key === "ArrowDown") i = Math.min(n - 1, i + cols);
-  else if (key === "ArrowUp") i = Math.max(0, i - cols);
-  selectAt(i, true);
-}
-
-function onKeyDown(e) {
-  if (e.isComposing || e.defaultPrevented) return; // 中文输入法组词中不抢键
-  if (e.altKey || e.ctrlKey || e.metaKey) return; // 热键交给系统
-
-  const key = e.key;
-  if (key === "Escape") {
-    e.preventDefault();
-    // 拖拽中按 Esc：取消拖拽并恢复原顺序
-    if (dragState) {
-      cancelAppDrag();
-      return;
-    }
-    // 右键菜单开着时先关菜单，不关整个应用中心
-    if (menuOpen) {
-      hideAppMenu();
-      return;
-    }
-    closeCenter();
-    return;
-  }
-  if (key === "Enter") {
-    e.preventDefault();
-    const app = filtered[selectedIndex] || filtered[0];
-    if (app) launch(app);
-    return;
-  }
-  if (key === "ArrowUp" || key === "ArrowDown" || key === "ArrowLeft" || key === "ArrowRight") {
-    if (!filtered.length) return;
-    e.preventDefault();
-    moveSelection(key);
   }
 }
 
@@ -482,38 +783,67 @@ function onGridContextMenu(e) {
 
 // ---------- 拖拽排序（pointer 事件 + Dock 同款位置预览；仅在没有搜索词时可用） ----------
 
-function startAutoScroll() {
-  if (autoScrollTimer) return;
-  autoScrollTimer = setInterval(tickAutoScroll, 40);
-}
-
-function stopAutoScroll() {
-  autoScrollDir = 0;
-  if (autoScrollTimer) {
-    clearInterval(autoScrollTimer);
-    autoScrollTimer = null;
+function clearEdgeTimer() {
+  if (edgeTimer) {
+    clearTimeout(edgeTimer);
+    edgeTimer = null;
   }
 }
 
-function tickAutoScroll() {
+/** 拖拽到视口上下边缘悬停 550ms 自动翻页；按住不放可以连续翻 */
+function armEdgeTimer() {
   const d = dragState;
-  if (!d || !d.moved) {
-    stopAutoScroll();
-    return;
-  }
-  // 方向由最近一次 pointermove 计算（指针停在边缘不动时也要持续滚动）
-  if (!autoScrollDir) return;
-  const before = scrollEl.scrollTop;
-  scrollEl.scrollTop += autoScrollDir * AUTO_SCROLL_STEP;
-  // 滚动后卡片位置变了，用最后的指针位置重新计算落点
-  if (scrollEl.scrollTop !== before) updateAppLiveOrder(d.lastX, d.lastY);
+  if (!d || !d.moved || !d.edgeDir) return;
+  clearEdgeTimer();
+  edgeTimer = setTimeout(() => {
+    edgeTimer = null;
+    const cur = dragState;
+    if (!cur || cur !== d || !cur.moved || !cur.edgeDir) return;
+    if (!flipPageForDrag(cur.edgeDir)) return; // 首/末页不循环，到边界停住
+    armEdgeTimer();
+  }, DRAG_EDGE_HOLD_MS);
 }
 
-function maybeAutoScroll(y) {
+function maybeEdgeFlip(y) {
+  const d = dragState;
+  if (!d || !d.moved) return;
   const r = scrollEl.getBoundingClientRect();
-  if (y < r.top + AUTO_SCROLL_ZONE) autoScrollDir = -1;
-  else if (y > r.bottom - AUTO_SCROLL_ZONE) autoScrollDir = 1;
-  else autoScrollDir = 0;
+  let dir = 0;
+  if (y <= r.top + DRAG_EDGE_ZONE) dir = -1;
+  else if (y >= r.bottom - DRAG_EDGE_ZONE) dir = 1;
+  if (dir === d.edgeDir) return;
+  d.edgeDir = dir;
+  if (dir) armEdgeTimer();
+  else clearEdgeTimer();
+}
+
+/** 拖拽中翻页：把被拖卡片按临时下标渲染进新页（向下翻→新页首，向上翻→上一页尾） */
+function flipPageForDrag(dir) {
+  const d = dragState;
+  if (!d || !d.moved) return false;
+  const target = page + dir;
+  if (target < 0 || target > pageCount - 1) return false;
+  page = target;
+  const start = page * pageSize;
+  d.tempIndex = dir > 0 ? start : start + pageSize - 1;
+  render();
+  animatePage(dir > 0 ? "next" : "prev");
+  return true;
+}
+
+/** 拖拽中重绘后重新绑定半透明源项（ghost 在 body 上，不受重绘影响） */
+function bindDragSource() {
+  const d = dragState;
+  if (!d) return;
+  let el = null;
+  const kids = gridEl.children;
+  for (let i = 0; i < kids.length; i++) {
+    if (kids[i].dataset.id === d.id) {
+      el = kids[i];
+      break;
+    }
+  }
+  d.el = el;
 }
 
 /** 按下卡片：记录起点；移动超过阈值才真正开始拖拽 */
@@ -529,8 +859,9 @@ function onGridPointerDown(e) {
 
   const r = card.getBoundingClientRect();
   dragState = {
-    el: card,
     id,
+    captureEl: card,
+    el: card,
     pointerId: e.pointerId,
     startX: e.clientX,
     startY: e.clientY,
@@ -540,6 +871,8 @@ function onGridPointerDown(e) {
     ghost: null,
     grabX: e.clientX - r.left,
     grabY: e.clientY - r.top,
+    tempIndex: 0,
+    edgeDir: 0,
   };
   // 捕获指针：拖到网格外/窗口边缘也能继续收到 move/up
   try {
@@ -558,14 +891,16 @@ function onWindowPointerMove(e) {
     if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < APP_DRAG_THRESHOLD) return;
     beginAppDrag();
   }
+  if (dragState !== d) return;
   updateAppGhost(e.clientX, e.clientY);
-  maybeAutoScroll(e.clientY);
+  maybeEdgeFlip(e.clientY);
   updateAppLiveOrder(e.clientX, e.clientY);
 }
 
 /** 进入拖拽：克隆一张跟手的 ghost，源卡片半透明留在实时让位后的位置 */
 function beginAppDrag() {
   const d = dragState;
+  if (!d) return;
   d.moved = true;
   hideAppMenu();
 
@@ -585,7 +920,10 @@ function beginAppDrag() {
   d.el.classList.add("drag-src");
   document.body.classList.add("ac-dragging");
   gridEl.classList.add("ac-dragging");
-  startAutoScroll();
+
+  // 初始目标下标 = 卡片当前全局下标（原位）；翻页时由 flipPageForDrag 改写
+  const draggedIdx = filtered.findIndex((a) => String(a.id) === d.id);
+  d.tempIndex = draggedIdx >= 0 ? draggedIdx : 0;
 }
 
 function updateAppGhost(x, y) {
@@ -598,21 +936,14 @@ function updateAppGhost(x, y) {
 /**
  * 实时让位：按指针所在卡片决定插到它前面还是后面，直接 gridEl.insertBefore。
  * 用矩形命中（而不是 elementFromPoint），避免源卡片自身挡住命中。
+ * 指针在网格上下方时交给边缘翻页处理，不在这里抢位置。
  */
 function updateAppLiveOrder(x, y) {
   const d = dragState;
-  if (!d || !d.moved) return;
+  if (!d || !d.moved || !d.el) return;
 
   const gridRect = gridEl.getBoundingClientRect();
-  // 指针在网格下方 → 移到末尾；在上方 → 移到开头
-  if (y > gridRect.bottom) {
-    if (gridEl.lastElementChild !== d.el) gridEl.appendChild(d.el);
-    return;
-  }
-  if (y < gridRect.top) {
-    if (gridEl.firstElementChild !== d.el) gridEl.insertBefore(d.el, gridEl.firstElementChild);
-    return;
-  }
+  if (y < gridRect.top || y > gridRect.bottom) return;
 
   // 指针落在哪张卡片上（排除源自身）
   let target = null;
@@ -639,7 +970,21 @@ function updateAppLiveOrder(x, y) {
   }
 }
 
-function onWindowPointerUp(e) {
+/** 用「全局下标 = 页起点 + DOM 下标」把被拖卡片插回 apps */
+function applyDragResult(d, domIndex) {
+  if (query) return false;
+  const dragId = String(d.id);
+  const draggedApp = apps.find((a) => String(a.id) === dragId);
+  if (!draggedApp) return false;
+  const rest = apps.filter((a) => String(a.id) !== dragId);
+  const target = clamp(page * pageSize + Math.max(0, domIndex), 0, rest.length);
+  rest.splice(target, 0, draggedApp);
+  if (rest.length !== apps.length) return false;
+  apps = rest;
+  return true;
+}
+
+function onWindowPointerUp() {
   const d = dragState;
   if (!d) return;
 
@@ -649,20 +994,33 @@ function onWindowPointerUp(e) {
     return;
   }
 
-  // 松手：DOM 顺序就是最终顺序
-  const domIds = Array.from(gridEl.querySelectorAll(".ac-app")).map((el) => el.dataset.id || "");
+  // 松手：DOM 顺序（页内）就是最终顺序
+  let domIndex = -1;
+  const kids = gridEl.children;
+  for (let i = 0; i < kids.length; i++) {
+    if (kids[i].dataset.id === d.id) {
+      domIndex = i;
+      break;
+    }
+  }
   const prevSelected = filtered[selectedIndex];
   const keepId = prevSelected ? prevSelected.id : null;
 
-  const changed = applyDomOrderToApps(domIds);
+  const before = apps.map((a) => String(a.id));
+  const changed = domIndex >= 0 ? applyDragResult(d, domIndex) : false;
   cleanupAppDrag();
   // 拖拽后抑制一次 click，避免松手被当成一次启动
   dragClickGuard = Date.now() + DRAG_CLICK_SUPPRESS_MS;
 
   if (changed) {
-    renderPreservingScroll(keepId);
-    commitAppOrder();
+    const after = apps.map((a) => String(a.id));
+    const reordered = after.some((id, i) => id !== before[i]);
+    rebuildFiltered(keepId);
+    if (reordered) commitAppOrder();
+  } else {
+    render();
   }
+
   // 拖拽期间若有 apps-changed 被搁置，这里补一次刷新
   if (pendingAppsReload) {
     pendingAppsReload = false;
@@ -692,14 +1050,18 @@ function cancelAppDrag() {
 function cleanupAppDrag() {
   const d = dragState;
   dragState = null;
-  stopAutoScroll();
+  clearEdgeTimer();
   if (d) {
+    d.edgeDir = 0;
     if (d.ghost && d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
-    if (d.el) {
-      d.el.classList.remove("drag-src");
+    for (const el of [d.el, d.captureEl]) {
+      if (el && el.classList) el.classList.remove("drag-src");
+    }
+    const src = d.captureEl || d.el;
+    if (src) {
       try {
-        if (d.el.releasePointerCapture && d.pointerId !== undefined) {
-          d.el.releasePointerCapture(d.pointerId);
+        if (src.releasePointerCapture && d.pointerId !== undefined) {
+          src.releasePointerCapture(d.pointerId);
         }
       } catch (err) {
         /* 指针已释放时忽略 */
@@ -708,34 +1070,6 @@ function cleanupAppDrag() {
   }
   document.body.classList.remove("ac-dragging");
   gridEl.classList.remove("ac-dragging");
-}
-
-/**
- * 用 DOM 顺序回写 apps（无搜索词时 filtered 与 apps 同序）。
- * 返回是否成功；数据不一致时不动，避免把列表写坏。
- */
-function applyDomOrderToApps(domIds) {
-  if (query) return false;
-  if (!apps.length || domIds.length !== apps.length) return false;
-  const byId = new Map(apps.map((a) => [String(a.id), a]));
-  const seen = new Set();
-  const next = [];
-  for (const id of domIds) {
-    const key = String(id);
-    const app = byId.get(key);
-    if (!app || seen.has(key)) return false;
-    seen.add(key);
-    next.push(app);
-  }
-  apps = next;
-  return true;
-}
-
-/** 重建列表但保持滚动位置与选中项 */
-function renderPreservingScroll(keepId) {
-  const top = scrollEl.scrollTop;
-  rebuildFiltered(keepId);
-  scrollEl.scrollTop = top;
 }
 
 /** 提交新的应用顺序（后端会存盘并重排缓存） */
@@ -762,8 +1096,10 @@ function shouldSuppressClick() {
 
 // ---------- 事件 ----------
 
-/** 每次打开应用中心：重置搜索/选中、聚焦输入框、滚动到顶 */
+/** 每次打开应用中心：重置搜索/选中/页码、聚焦输入框 */
 function onOpen() {
+  // 先落到关闭态（遮罩 opacity 0），玻璃就绪后由 surface-open.js 播入场
+  beginSurfaceOpen();
   launching = false;
   cancelAppDrag(); // 上次若残留拖拽状态，清掉并恢复顺序
   pendingAppsReload = false;
@@ -771,7 +1107,8 @@ function onOpen() {
   hideLaunchError();
   searchEl.value = "";
   query = "";
-  scrollEl.scrollTop = 0;
+  page = 0;
+  wheelAccum = 0;
   rebuildFiltered(null);
   focusSearch();
   // 静默拉一次缓存：后端缓存为空/过期会自动后台刷新并随后发 apps-changed
@@ -789,12 +1126,43 @@ function onAppsChanged() {
   loadApps({ silent: true });
 }
 
+/** 窗口尺寸/布局变化：列数或每页容量变了才重绘（拖拽中跳过） */
+function scheduleRelayout() {
+  if (relayoutRaf) return;
+  relayoutRaf = requestAnimationFrame(() => {
+    relayoutRaf = 0;
+    if (dragState) return;
+    const metrics = measureGrid();
+    if (metrics.columns === cols && metrics.pageSize === pageSize) return;
+    render();
+  });
+}
+
+function onPagerClick(e) {
+  let handled = true;
+  const dot = e.target.closest ? e.target.closest("[data-page]") : null;
+  if (dot) {
+    const p = Number(dot.dataset.page);
+    if (Number.isInteger(p)) goPage(p);
+  } else if (e.target.closest && e.target.closest("#ac-pager-prev")) {
+    goPage(page - 1);
+  } else if (e.target.closest && e.target.closest("#ac-pager-next")) {
+    goPage(page + 1);
+  } else {
+    handled = false;
+  }
+  if (handled) focusSearch();
+}
+
 function bindEvents() {
-  searchEl.addEventListener("input", () => rebuildFiltered(null));
+  searchEl.addEventListener("input", () => {
+    page = 0;
+    rebuildFiltered(null);
+  });
   if (refreshBtn) refreshBtn.addEventListener("click", onRefreshClick);
   if (importBtn) importBtn.addEventListener("click", onImportClick);
 
-  // 卡片：点击启动。
+  // 卡片：点击启动（data-i 始终是 filtered 的全局下标，分页后仍正确）。
   // 注意：hover 只做 CSS 高亮，不改变键盘选中项 —— 否则鼠标恰好停在某张卡片上时，
   // Enter 会启动「鼠标下那张」而不是键盘选中的那张（GNOME 也是两套状态互不干扰）。
   gridEl.addEventListener("click", (e) => {
@@ -835,12 +1203,25 @@ function bindEvents() {
     if (menuEl.contains(e.target)) return;
     hideAppMenu();
   });
-  // 右键菜单：滚动列表时关闭
-  scrollEl.addEventListener("scroll", () => {
-    if (menuOpen) hideAppMenu();
-  });
+
+  // 滚轮换页（必须 passive:false 才能阻止原生滚动/手势）
+  scrollEl.addEventListener("wheel", onWheel, { passive: false });
+
+  // 分页器：上一页 / 圆点 / 下一页
+  if (pagerEl) pagerEl.addEventListener("click", onPagerClick);
 
   document.addEventListener("keydown", onKeyDown);
+
+  // 窗口尺寸变化 / 布局变化后重算分页
+  window.addEventListener("resize", scheduleRelayout);
+  if (typeof ResizeObserver === "function") {
+    try {
+      const ro = new ResizeObserver(scheduleRelayout);
+      ro.observe(scrollEl);
+    } catch (e) {
+      /* 旧内核不支持时忽略，靠 resize 兜底 */
+    }
+  }
 }
 
 function ensureListeners() {
@@ -869,7 +1250,17 @@ async function waitTauri(timeoutMs) {
   }
 }
 
+/** 主题模块（theme-ui 提供）：加载失败也不影响应用中心，回退到 shared.css 的媒体查询 */
+async function initTheme() {
+  try {
+    await import("./theme.js");
+  } catch (e) {
+    /* 主题模块缺失/加载失败时忽略 */
+  }
+}
+
 async function main() {
+  initTheme();
   bindEvents();
   ensureListeners();
   focusIfVisible(); // 窗口若已可见（页面加载慢于首次打开事件），先聚焦搜索框

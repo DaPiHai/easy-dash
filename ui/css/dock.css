@@ -1,24 +1,38 @@
+/* ============================================================
+   Dock（底部停靠栏）样式
+   - 悬浮玻璃条 + 图标悬停放大 + 运行指示点 + tooltip + 右键菜单
+   - 颜色/阴影/圆角/间距/时长全部走 shared.css token，亮暗两套自动生效
+   ============================================================ */
+
 body {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   align-items: center;
   height: 100vh;
-  padding: 14px 8px 8px;
+  padding: var(--space-5) var(--space-3) var(--space-3);
 }
+
+/* ==================== 停靠栏本体 ==================== */
 
 .dock {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 18px;
-  transition: transform 0.25s ease, opacity 0.25s ease;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-slow) var(--ease),
+    background-color var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease);
 }
 
-body.hidden .dock {
+/* 全屏隐藏（fs-hidden）与智能隐藏（auto-hidden）分开，二者可叠加。
+   状态类名不能用 `.hidden`：shared.css 的 `.hidden{display:none!important}` 会命中
+   body，让 Dock 页面失去布局，量出 0×0 后把窗口缩成底部一个小方块。 */
+body.fs-hidden .dock,
+body.auto-hidden .dock {
   transform: translateY(140%);
   opacity: 0;
   pointer-events: none;
@@ -27,9 +41,11 @@ body.hidden .dock {
 .items {
   display: flex;
   align-items: flex-end;
-  gap: 4px;
-  padding-bottom: 6px; /* 给指示点留空间 */
+  gap: var(--space-1);
+  padding-bottom: var(--space-2); /* 给指示点留空间 */
 }
+
+/* ==================== 图标按钮 ==================== */
 
 .dock-item,
 .dock-btn {
@@ -37,17 +53,22 @@ body.hidden .dock {
   flex: none;
   width: 46px;
   height: 46px;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
   transform-origin: 50% 100%;
-  transition: transform 0.09s linear, background 0.15s ease;
+  transition: transform var(--dur-fast) linear, background-color var(--dur-fast) var(--ease);
+}
+
+/* 九点格（应用中心）按钮用 currentColor 描点：浅色主题变深、深色主题保持浅色 */
+.dock-btn {
+  color: var(--text);
 }
 
 .dock-item:hover,
 .dock-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--hover);
 }
 
 .dock-item img,
@@ -58,21 +79,28 @@ body.hidden .dock {
   pointer-events: none;
 }
 
-/* 图标提取失败时的字母占位 */
+/* 九点格是 18×18 viewBox 的图标符号，按 36px 渲染会过大且挤压留白，单独收到 20px */
+.dock-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 图标提取失败时的字母占位（底色由 JS 按名字哈希上色） */
 .dock-item .letter {
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 16px;
   font-weight: 700;
-  color: #fff;
+  color: var(--on-accent);
   pointer-events: none;
 }
 
-/* 拖拽排序 */
+/* ==================== 拖拽排序 ==================== */
+
 .drag-src {
   opacity: 0.3;
 }
@@ -81,11 +109,12 @@ body.hidden .dock {
   opacity: 0.95;
   transform: scale(1.08);
   transform-origin: 50% 100%;
-  border-radius: 12px;
-  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
 }
 
-/* 运行指示点（GNOME 风格） */
+/* ==================== 运行指示点（GNOME 风格） ==================== */
+
 .dock-item::after {
   content: "";
   position: absolute;
@@ -94,36 +123,43 @@ body.hidden .dock {
   transform: translateX(-50%);
   width: 5px;
   height: 5px;
-  border-radius: 3px;
+  border-radius: var(--radius-pill);
   background: transparent;
-  transition: width 0.15s ease, background 0.15s ease;
+  transition: width var(--dur-base) var(--ease), background-color var(--dur-base) var(--ease);
 }
 
 .dock-item.running::after {
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--text);
+  opacity: 0.85;
 }
 
 .dock-item.focused::after {
   width: 16px;
-  background: #fff;
+  background: var(--text);
+  opacity: 1;
 }
+
+/* ==================== 分隔线 ==================== */
 
 .divider {
   width: 1px;
   height: 34px;
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--border-strong);
 }
+
+/* ==================== 悬停提示 ==================== */
 
 .tooltip {
   position: fixed;
   transform: translateX(-50%);
   max-width: 320px;
-  padding: 5px 10px;
-  background: rgba(36, 36, 38, 0.96);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   font-size: 12px;
   color: var(--text);
+  box-shadow: var(--shadow-pop);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -131,27 +167,30 @@ body.hidden .dock {
   z-index: 30;
 }
 
+/* ==================== 右键菜单 ==================== */
+
 .ctx-menu {
   position: fixed;
   min-width: 150px;
-  padding: 5px;
-  background: rgba(36, 36, 38, 0.97);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: var(--space-1);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
   z-index: 40;
 }
 
 .ctx-menu .mi {
   display: block;
   width: 100%;
-  padding: 7px 12px;
-  border-radius: 6px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
   text-align: left;
   font-size: 13px;
   color: var(--text);
+  transition: background-color var(--dur-fast) var(--ease);
 }
 
 .ctx-menu .mi:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--hover);
 }

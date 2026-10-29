@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicIsize, AtomicU64};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
 
 use crate::config::Config;
 use crate::types::{AppEntry, NotificationItem, TrayItem};
+use crate::winapi::glass::GlassBackdrop;
 
 /// 全局共享状态
 pub struct AppState {
@@ -28,6 +29,11 @@ pub struct AppState {
     /// hwnd → 最后一次可见时的截图 data URL（最小化窗口在概览里回退用它，
     /// 避免只剩图标卡片）
     pub snapshots: Mutex<HashMap<isize, String>>,
+    /// 窗口 label → 该窗口最近一次 show 之前的客户区桌面取样（液态玻璃 2.0）。
+    /// WebView2 透明窗口无法对桌面做 backdrop-filter，各 surface 在显示前由
+    /// Rust 截一次自己的客户区；显示后事件（surface-backdrop）丢失时前端用
+    /// `surface_backdrop` 命令回读这里。
+    pub surface_backdrops: Mutex<HashMap<String, GlassBackdrop>>,
     /// 图标解析队列：Shell COM 调用（AUMID/AppsFolder）可能在无消息泵线程上
     /// 永久阻塞，绝不能在监控线程/主线程热路径同步执行
     pub icon_tx: Sender<isize>,
@@ -43,12 +49,13 @@ pub struct AppState {
     /// 最近一个非本应用的前台窗口（点击 Dock 时 Dock 会抢走前台，
     /// 最小化/激活切换需依据点击前的真实前台判断）
     pub last_foreign_fg: AtomicIsize,
-    /// Dock 页面心跳时间戳（毫秒）：页面每 3 秒上报一次；
-    /// 超时说明页面 JS 死了或渲染进程崩溃，看门狗会 reload
-    pub dock_hb_ms: AtomicU64,
-    /// 顶栏面板是否展开（展开时窗口被拉高，AppBar 周期校正必须让路，
-    /// 否则 2 秒后窗口会被 sync_topbar 顶回 32px）
-    pub topbar_panel_open: AtomicBool,
+    /// 各 Dock 页面的心跳时间戳（毫秒，key = dock 窗口 label）：
+    /// 页面每 3 秒上报一次；超时说明该页 JS 死了或渲染进程崩溃，看门狗会 reload。
+    /// 多显示器时每块屏的 Dock 独立上报，不能共用一个时间戳。
+    pub dock_heartbeats: Mutex<HashMap<String, u64>>,
+    /// 当前处于全屏的前台窗口所在显示器（device key，如 `\\.\DISPLAY1`）；
+    /// None = 没有全屏应用。全屏隐藏据此只影响对应显示器。
+    pub fullscreen_monitor: Mutex<Option<String>>,
     /// 系统托盘镜像条目缓存（含截图图标）
     pub tray: Mutex<Vec<TrayItem>>,
     /// 托盘刷新请求通道（前端/启动时投递，工作线程消费）
@@ -72,6 +79,9 @@ pub struct AppState {
     pub apps_refreshing: AtomicBool,
     /// 应用列表最近一次刷新完成时间（毫秒；0 = 尚未完成）
     pub apps_refreshed_ms: AtomicU64,
+    /// 系统当前是否深色：-1 = 未知，0 = 浅色，1 = 深色。
+    /// monitor 线程每 2 秒比对一次注册表，变化时推送 theme-changed
+    pub system_dark: AtomicI8,
 }
 
 impl AppState {
@@ -88,6 +98,7 @@ impl AppState {
             order_seq: AtomicU64::new(1),
             win_size: Mutex::new(HashMap::new()),
             snapshots: Mutex::new(HashMap::new()),
+            surface_backdrops: Mutex::new(HashMap::new()),
             icon_tx: tx,
             icon_rx: Mutex::new(Some(rx)),
             icon_pending: Mutex::new(HashSet::new()),
@@ -95,8 +106,8 @@ impl AppState {
             config: Mutex::new(Config::default()),
             own_hwnds: Mutex::new(Vec::new()),
             last_foreign_fg: AtomicIsize::new(0),
-            dock_hb_ms: AtomicU64::new(now_ms()),
-            topbar_panel_open: AtomicBool::new(false),
+            dock_heartbeats: Mutex::new(HashMap::new()),
+            fullscreen_monitor: Mutex::new(None),
             tray: Mutex::new(Vec::new()),
             tray_tx,
             tray_rx: Mutex::new(Some(tray_rx)),
@@ -110,7 +121,28 @@ impl AppState {
             apps_rx: Mutex::new(Some(apps_rx)),
             apps_refreshing: AtomicBool::new(false),
             apps_refreshed_ms: AtomicU64::new(0),
+            system_dark: AtomicI8::new(-1),
         }
+    }
+
+    /// 系统当前是否深色；None = 尚未读取/读取失败
+    pub fn system_dark_opt(&self) -> Option<bool> {
+        match self.system_dark.load(std::sync::atomic::Ordering::Relaxed) {
+            -1 => None,
+            0 => Some(false),
+            _ => Some(true),
+        }
+    }
+
+    /// 记录系统当前深浅色（None 表示未知）
+    pub fn set_system_dark(&self, dark: Option<bool>) {
+        let value: i8 = match dark {
+            None => -1,
+            Some(false) => 0,
+            Some(true) => 1,
+        };
+        self.system_dark
+            .store(value, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

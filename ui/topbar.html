@@ -2,9 +2,30 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="color-scheme" content="dark" />
+  <!-- 首帧预置：主题只支持 light/dark（旧版 "system" 归一为 dark），
+       材质为 solid/liquid/glow（非法值归一 solid）；theme.js 随后按后端配置校准 -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("easydash.theme");
+        var theme = t === "light" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", theme);
+        document.documentElement.style.colorScheme = theme;
+        var m = localStorage.getItem("easydash.material");
+        var material = m === "liquid" || m === "glow" ? m : "solid";
+        document.documentElement.setAttribute("data-material", material);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.setAttribute("data-material", "solid");
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="css/shared.css" />
   <link rel="stylesheet" href="css/topbar.css" />
+  <link rel="stylesheet" href="css/panels.css" />
+  <link rel="stylesheet" href="css/materials.css" />
+  <link rel="stylesheet" href="css/motion.css" />
+  <link rel="stylesheet" href="css/cursor-glow.css" />
 </head>
 <body>
   <!-- 顶栏本体：固定 32px 高，窗口被拉高后下方区域留给面板 -->
@@ -44,6 +65,77 @@
 
   <!-- 托盘 hover 提示 -->
   <div id="tooltip" class="tooltip hidden"></div>
+
+  <!-- 滚轮音量 OSD：顶栏内浮层（窗口常态仅 32px 高，必须留在条内） -->
+  <div id="vol-osd" class="vol-osd" role="status" aria-live="polite" aria-hidden="true">
+    <span class="vol-osd-ico" id="vol-osd-ico"></span>
+    <span class="vol-osd-text" id="vol-osd-text"></span>
+    <span class="vol-osd-bar"><span class="vol-osd-fill" id="vol-osd-fill"></span></span>
+  </div>
+
+  <!-- 液态玻璃折射滤镜：feDisplacementMap 只作用于玻璃底图与边缘折射层，不碰文字。
+       注意：不能用 display:none（Chromium 会解析不到 filter 引用），用 0×0 的文档内 SVG。 -->
+  <svg
+    class="lg-filters"
+    width="0"
+    height="0"
+    aria-hidden="true"
+    focusable="false"
+    style="position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none"
+  >
+    <defs>
+      <!-- 玻璃体：低频、较大位移，负责整体液态波动 -->
+      <filter
+        id="lg-refract"
+        x="-15%"
+        y="-15%"
+        width="130%"
+        height="130%"
+        color-interpolation-filters="sRGB"
+      >
+        <feTurbulence
+          type="fractalNoise"
+          baseFrequency="0.006 0.012"
+          numOctaves="2"
+          seed="11"
+          result="lgNoise"
+        />
+        <feGaussianBlur in="lgNoise" stdDeviation="2" result="lgSoftNoise" />
+        <feDisplacementMap
+          in="SourceGraphic"
+          in2="lgSoftNoise"
+          scale="12"
+          xChannelSelector="R"
+          yChannelSelector="G"
+        />
+      </filter>
+      <!-- 边缘折射：高频、小位移，让镜面高光带一点有机的液态弯曲 -->
+      <filter
+        id="lg-refract-edge"
+        x="-10%"
+        y="-10%"
+        width="120%"
+        height="120%"
+        color-interpolation-filters="sRGB"
+      >
+        <feTurbulence
+          type="fractalNoise"
+          baseFrequency="0.02 0.035"
+          numOctaves="2"
+          seed="4"
+          result="lgEdgeNoise"
+        />
+        <feGaussianBlur in="lgEdgeNoise" stdDeviation="0.7" result="lgEdgeSoft" />
+        <feDisplacementMap
+          in="SourceGraphic"
+          in2="lgEdgeSoft"
+          scale="3"
+          xChannelSelector="R"
+          yChannelSelector="G"
+        />
+      </filter>
+    </defs>
+  </svg>
 
   <script>
     // 独立于模块的错误捕获：模块脚本语法/加载失败也能把原因显示出来

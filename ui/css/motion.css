@@ -1,0 +1,611 @@
+/* ============================================================
+   easy-dash 动效层：iOS 手感的微交互（v0.4）
+
+   设计原则：
+   1) 只做「有物理感」的运动：弹性回弹（--ease-spring / --ease-spring-soft）、
+      流体减速（--ease-out-fluid）；不做装饰性循环动画
+      （唯一例外是 Dock 启动弹跳，620ms 即结束）。
+   2) 只动 transform / scale / translate / opacity，避免触发布局；
+      分段滑块与开关滑块会动宽度，量只有 2–3px，且仅在按压瞬间。
+   3) 按压统一 --press-scale（0.96）：按下用 scale 属性瞬时缩，松手用弹性曲线回弹；
+      用 `scale` 而不是 `transform`，避免覆盖已有的 transform（拖拽、悬停位移、放大镜）。
+   4) prefers-reduced-motion: reduce 下由 shared.css 全局把动画/过渡压到 0.01ms，
+      本文件不再新增循环动画；液态玻璃扫光本身也在 no-preference 媒体查询里。
+   5) 本文件在各页面 CSS 与 materials.css 之后加载，只在上面叠加运动，不改变静态观感。
+   ============================================================ */
+
+/* ============================================================
+   1. 按压反馈（iPhone 图标/按钮的「按下即缩小、松手弹回」）
+   ============================================================ */
+
+.ctl-tile,
+.ctl-seg button,
+.ctl-action,
+.ctl-mute,
+.dock-btn,
+.ac-app,
+.ac-pager-btn,
+.ac-import,
+.ac-menu-item,
+.mp-btn,
+.mp-tab,
+.mp-seg button,
+.mp-close,
+.med-btn,
+.ntf-card,
+.ntf-action,
+.ntf-open-app,
+.cal-nav,
+.cal-day,
+.mi,
+.tray-item,
+.activities,
+.clock-btn,
+.cc-btn,
+.gear-btn {
+  transition: scale var(--dur-press) var(--ease-out-fluid),
+    background-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    outline-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease), transform var(--dur-fast) linear;
+}
+
+.ctl-tile:active,
+.ctl-seg button:active,
+.ctl-action:active,
+.ctl-mute:active,
+.dock-btn:active,
+.ac-app:active,
+.ac-pager-btn:active,
+.ac-import:active,
+.ac-menu-item:active,
+.mp-btn:active,
+.mp-tab:active,
+.mp-seg button:active,
+.mp-close:active,
+.med-btn:active,
+.ntf-card:active,
+.ntf-action:active,
+.ntf-open-app:active,
+.cal-nav:active,
+.cal-day:active,
+.mi:active,
+.tray-item:active,
+.activities:active,
+.clock-btn:active,
+.cc-btn:active,
+.gear-btn:active {
+  scale: var(--press-scale);
+}
+
+/* 开关整体也跟手缩一下（滑块单独有拉伸动画，见 §5） */
+.ctl-switch,
+.mp-switch {
+  transition: scale var(--dur-press) var(--ease-out-fluid);
+}
+
+.ctl-switch:active,
+.mp-switch:active {
+  scale: 0.94;
+}
+
+/* ============================================================
+   2. 分段控件：滑块指示器（iOS 分段控件，选中块滑动过去而不是跳变）
+   seg-thumb.js 负责测量并写入 --seg-x / --seg-y / --seg-w / --seg-h
+   ============================================================ */
+
+.ctl-seg,
+.mp-seg {
+  position: relative;
+}
+
+.seg-thumb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--seg-w, 0px);
+  height: var(--seg-h, 0px);
+  transform: translate(var(--seg-x, 0px), var(--seg-y, 0px));
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform var(--dur-spring) var(--ease-spring),
+    width var(--dur-spring) var(--ease-spring), height var(--dur-spring) var(--ease-spring),
+    opacity var(--dur-fast) var(--ease);
+}
+
+/* 有滑块指示器时，按钮自身不再画选中底（避免双层底），只保留文字/图标强调 */
+.ctl-seg.has-thumb button,
+.mp-seg.has-thumb button {
+  position: relative;
+  z-index: 1;
+}
+
+.ctl-seg.has-thumb button.active,
+.ctl-seg.has-thumb button.active:hover,
+.mp-seg.has-thumb button.active,
+.mp-seg.has-thumb button.active:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* ============================================================
+   3. 面板 / 抽屉：弹性入场 + 退出动画（panels.js 加 .panel-out）
+   ============================================================ */
+
+@keyframes sheet-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.972);
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes sheet-out {
+  0% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+}
+
+.panel {
+  animation: sheet-in var(--dur-sheet) var(--ease-spring-soft);
+}
+
+.panel.panel-out {
+  animation: sheet-out 150ms var(--ease-out-fluid) forwards;
+}
+
+/* 面板内容轻量错峰上浮（每次展开重播一次，切换子视图回来也会重播） */
+@keyframes content-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.panel:not(.hidden) .ctl-main > *,
+.panel:not(.hidden) .ntf-cols {
+  animation: content-rise 300ms var(--ease-out-fluid) both;
+}
+
+.panel:not(.hidden) .ctl-main > :nth-child(1) {
+  animation-delay: 8ms;
+}
+.panel:not(.hidden) .ctl-main > :nth-child(2) {
+  animation-delay: 26ms;
+}
+.panel:not(.hidden) .ctl-main > :nth-child(3) {
+  animation-delay: 44ms;
+}
+.panel:not(.hidden) .ctl-main > :nth-child(4) {
+  animation-delay: 62ms;
+}
+.panel:not(.hidden) .ctl-main > :nth-child(n + 5) {
+  animation-delay: 80ms;
+}
+
+/* 控制中心的连接子视图：从右侧滑入（display 变化触发，无需 JS） */
+@keyframes sub-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ctl-sub:not(.hidden) {
+  animation: sub-in 260ms var(--ease-out-fluid);
+}
+
+/* ============================================================
+   4. 卡片 / 条目入场：通知分组错峰（notifications.js 在打开时加 .entering）
+   ============================================================ */
+
+@keyframes ntf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ntf-list.entering .ntf-group {
+  animation: ntf-rise 340ms var(--ease-out-fluid) both;
+}
+
+.ntf-list.entering .ntf-group:nth-child(1) {
+  animation-delay: 20ms;
+}
+.ntf-list.entering .ntf-group:nth-child(2) {
+  animation-delay: 60ms;
+}
+.ntf-list.entering .ntf-group:nth-child(3) {
+  animation-delay: 100ms;
+}
+.ntf-list.entering .ntf-group:nth-child(4) {
+  animation-delay: 140ms;
+}
+.ntf-list.entering .ntf-group:nth-child(n + 5) {
+  animation-delay: 180ms;
+}
+
+/* 展开「N 条」时后续条目轻微弹入 */
+@keyframes item-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ntf-group.expanded .ntf-layer .ntf-item {
+  animation: item-in 200ms var(--ease-out-fluid) both;
+}
+
+.ntf-group.expanded .ntf-layer .ntf-item:nth-child(2) {
+  animation-delay: 30ms;
+}
+.ntf-group.expanded .ntf-layer .ntf-item:nth-child(3) {
+  animation-delay: 60ms;
+}
+.ntf-group.expanded .ntf-layer .ntf-item:nth-child(n + 4) {
+  animation-delay: 85ms;
+}
+
+/* ============================================================
+   5. 开关：滑块弹性位移 + 按压拉伸（iOS 开关手感）
+   ============================================================ */
+
+.ctl-switch::after {
+  transition: transform var(--dur-spring) var(--ease-spring),
+    width var(--dur-press) var(--ease-out-fluid), background-color var(--dur-fast) var(--ease);
+}
+
+.ctl-switch:active::after {
+  width: 16px;
+}
+
+.ctl-switch.on:active::after {
+  width: 16px;
+  transform: translateX(12px);
+}
+
+.mp-switch-thumb {
+  transition: transform var(--dur-spring) var(--ease-spring),
+    width var(--dur-press) var(--ease-out-fluid);
+}
+
+.mp-switch:active .mp-switch-thumb {
+  width: 21px;
+}
+
+.mp-switch input:checked:active + .mp-switch-track .mp-switch-thumb {
+  width: 21px;
+  transform: translateX(15px);
+}
+
+/* ============================================================
+   6. 滑条：滑块放大 + 强调色光环（iOS 滑块的抓取反馈）
+   ============================================================ */
+
+.ctl-slider::-webkit-slider-thumb {
+  transition: transform var(--dur-fast) var(--ease-spring), box-shadow var(--dur-fast) var(--ease);
+}
+
+.ctl-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+  box-shadow: 0 1px 3px var(--shadow-icon), 0 0 0 4px var(--accent-soft);
+}
+
+.ctl-slider:active::-webkit-slider-thumb {
+  transform: scale(1.26);
+  box-shadow: 0 1px 4px var(--shadow-icon), 0 0 0 6px var(--accent-soft);
+}
+
+/* 进度条本身平滑跟随（拖动时只 60ms，避免「追不上手」） */
+.ctl-slider::-webkit-slider-runnable-track,
+.med-bar-fill {
+  transition: background-size 60ms linear, width 120ms linear;
+}
+
+/* ============================================================
+   7. 日历 / 媒体：今日弹一下、封面悬停轻微放大
+   ============================================================ */
+
+@keyframes today-pop {
+  0% {
+    transform: scale(0.82);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.cal-day.today .cal-day-num {
+  animation: today-pop 420ms var(--ease-spring-soft);
+}
+
+.med-cover {
+  transition: transform var(--dur-spring) var(--ease-spring-soft);
+}
+
+.med-cover:hover {
+  transform: scale(1.04);
+}
+
+.med-btn-main {
+  transition: scale var(--dur-press) var(--ease-out-fluid),
+    background-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+
+.med-btn-main:active {
+  scale: 0.92;
+}
+
+/* ============================================================
+   8. Dock：启动弹跳（macOS 经典反馈，620ms 结束；dock.js 加 .launching）
+   ============================================================ */
+
+@keyframes dock-bounce {
+  0% {
+    translate: 0 0;
+  }
+  32% {
+    translate: 0 -13px;
+  }
+  54% {
+    translate: 0 0;
+  }
+  72% {
+    translate: 0 -6px;
+  }
+  100% {
+    translate: 0 0;
+  }
+}
+
+.dock-item.launching img,
+.dock-item.launching .letter {
+  animation: dock-bounce 620ms var(--ease-out-fluid);
+}
+
+/* Dock 图标按压：只缩图标本体（.dock-item 的 transform 由放大镜 JS 控制，不能动它） */
+.dock-item img,
+.dock-item .letter {
+  transition: scale var(--dur-press) var(--ease-out-fluid);
+}
+
+.dock-item:active img,
+.dock-item:active .letter {
+  scale: 0.9;
+}
+
+/* ============================================================
+   9. 管理面板 / 应用中心 / 菜单：切换与弹出的运动
+   ============================================================ */
+
+@keyframes section-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mp-section:not(.hidden) {
+  animation: section-in 260ms var(--ease-out-fluid);
+}
+
+/* toast 用 scale 属性做弹出，避免覆盖 translateX(-50%) 的居中 transform */
+@keyframes toast-pop {
+  from {
+    opacity: 0;
+    scale: 0.92;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+.mp-toast:not(.hidden) {
+  animation: toast-pop 260ms var(--ease-spring-soft);
+}
+
+/* 右键菜单 / 应用中心菜单 / 电源菜单：轻微放大弹出 */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ctx-menu:not(.hidden),
+.ac-menu:not(.hidden) {
+  animation: pop-in 160ms var(--ease-spring-soft);
+  transform-origin: top left;
+}
+
+/* 顶栏 OSD 数字：滚轮调节时轻微弹一下 */
+@keyframes osd-pop {
+  from {
+    scale: 0.94;
+  }
+  to {
+    scale: 1;
+  }
+}
+
+.vol-osd.show {
+  animation: osd-pop 180ms var(--ease-spring-soft);
+}
+
+/* ============================================================
+   10. 减少动效：本层的循环/一次性动画全部让位
+   （shared.css 已把时长压到 0.01ms，这里额外关掉滑块宽度变化，
+    避免 reduce-motion 下开关被「拉宽」一帧）
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  .ctl-switch:active::after,
+  .ctl-switch.on:active::after,
+  .mp-switch:active .mp-switch-thumb,
+  .mp-switch input:checked:active + .mp-switch-track .mp-switch-thumb {
+    width: auto;
+    transform: none;
+  }
+
+  .panel:not(.hidden) .ctl-main > *,
+  .panel:not(.hidden) .ntf-cols,
+  .ntf-list.entering .ntf-group,
+  .mp-section:not(.hidden),
+  .mp-toast:not(.hidden) {
+    animation: none;
+  }
+}
+
+/* ============================================================
+   11. 全屏表面（活动概览 / 应用中心）打开动画
+   JS：surface-open.js 在打开事件里给 #backdrop 加 .surf-closed；
+   glass.js 在玻璃底片补截完成、.lg-wait 揭示后派发 easydash:surface-ready
+   → 移除 .surf-closed、加 .surf-open 播入场；600ms 后移除 .surf-open。
+   ============================================================ */
+
+/* 11.1 遮罩：从桌面淡入。
+   用 transition 而不是 animation：liquid 的 .lg-wait 会给 #backdrop 加
+   animation:none !important（截屏期间），animation 会被掐断/重播，
+   transition 不受影响。background-color 一并写回，保留主题切换的过渡。 */
+#backdrop {
+  transition: opacity 200ms var(--ease-out-fluid),
+    background-color var(--dur-base) var(--ease);
+}
+
+#backdrop.surf-closed {
+  opacity: 0;
+  transition: none;
+}
+
+@keyframes surf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes surf-card-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes surf-app-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes surf-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 11.2 活动概览：网格整体上浮 + 窗口卡片错峰弹入
+   （卡片 animation-delay 由 overview.js 按序号内联写入） */
+.surf-open #grid {
+  animation: surf-rise 300ms var(--ease-spring-soft) both;
+}
+
+.surf-open .card {
+  animation: surf-card-in 260ms var(--ease-out-fluid) both;
+}
+
+.surf-open #empty {
+  animation: surf-fade-in 240ms var(--ease-out-fluid) 80ms both;
+}
+
+/* .hint 用 translateX(-50%) 居中，只能动 opacity，不能动 transform */
+.surf-open .hint {
+  animation: surf-fade-in 240ms var(--ease-out-fluid) 120ms both;
+}
+
+/* 11.3 应用中心：面板上浮 + 图标错峰（--enter-i 由 launcher.js 写入，上限 12） */
+.surf-open #ac-panel {
+  animation: surf-rise 320ms var(--ease-spring-soft) both;
+}
+
+/* 拖拽中的卡片（ghost / 源卡片）不参与入场，避免覆盖拖拽的 transform / opacity */
+.surf-open .ac-app:not(.drag-src):not(.drag-ghost) {
+  animation: surf-app-in 200ms var(--ease-out-fluid) both;
+  animation-delay: calc(var(--enter-i, 0) * 10ms);
+}
+
+/* 11.4 减少动效：直接显示（JS 已跳过关闭态，这里再兜一层） */
+@media (prefers-reduced-motion: reduce) {
+  #backdrop.surf-closed {
+    opacity: 1;
+  }
+
+  .surf-open #grid,
+  .surf-open .card,
+  .surf-open #empty,
+  .surf-open .hint,
+  .surf-open #ac-panel,
+  .surf-open .ac-app {
+    animation: none;
+  }
+}

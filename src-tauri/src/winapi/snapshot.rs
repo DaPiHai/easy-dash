@@ -109,11 +109,9 @@ pub fn capture_jpeg(hwnd: HWND, max_w: u32) -> Option<String> {
 
 /// 抓取屏幕上一块矩形区域（物理像素），返回自顶向下 RGBA。
 ///
-/// 用于托盘图标的视觉匹配：UIA 给出的托盘按钮区域在屏幕上，按
-/// 候选图标合成后比较像素，可以识别 UIA 名称为空的托盘项（没有 tooltip 时
-/// 注册表条目无从按名字对应）。
-pub fn capture_rgba(x: i32, y: i32, w: i32, h: i32) -> Option<(Vec<u8>, i32, i32)> {
-    if w <= 0 || h <= 0 || w > 512 || h > 512 {
+/// `max` 是单边上限：超过直接返回 None，避免误传巨大尺寸时分配超大缓冲。
+pub fn capture_rgba_max(x: i32, y: i32, w: i32, h: i32, max: i32) -> Option<(Vec<u8>, i32, i32)> {
+    if w <= 0 || h <= 0 || max <= 0 || w > max || h > max {
         return None;
     }
     unsafe {
@@ -156,6 +154,32 @@ pub fn capture_rgba(x: i32, y: i32, w: i32, h: i32) -> Option<(Vec<u8>, i32, i32
         let _ = DeleteDC(mem);
         let _ = ReleaseDC(None, hdc_screen);
         result
+    }
+}
+
+/// 抓取屏幕上一块矩形区域（物理像素），单边上限 512。
+///
+/// 用于托盘图标的视觉匹配：UIA 给出的托盘按钮区域在屏幕上，按
+/// 候选图标合成后比较像素，可以识别 UIA 名称为空的托盘项（没有 tooltip 时
+/// 注册表条目无从按名字对应）。
+pub fn capture_rgba(x: i32, y: i32, w: i32, h: i32) -> Option<(Vec<u8>, i32, i32)> {
+    capture_rgba_max(x, y, w, h, 512)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 只验证参数校验分支（不进入 GDI，纯 CPU）
+    #[test]
+    fn capture_rgba_bounds_are_checked_before_gdi() {
+        // 托盘路径保持 512 单边上限
+        assert!(capture_rgba(0, 0, 513, 100).is_none());
+        assert!(capture_rgba(0, 0, 100, 513).is_none());
+        // 通用入口按传入上限 + 正尺寸校验
+        assert!(capture_rgba_max(0, 0, 0, 100, 4096).is_none());
+        assert!(capture_rgba_max(0, 0, 100, 100, 0).is_none());
+        assert!(capture_rgba_max(0, 0, 5000, 100, 4096).is_none());
     }
 }
 

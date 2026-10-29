@@ -1,12 +1,214 @@
-:root {
-  --panel-bg: rgba(24, 24, 26, 0.85);
-  --panel-border: rgba(255, 255, 255, 0.08);
-  --text: #ffffff;
-  --text-dim: rgba(255, 255, 255, 0.75);
+/* ============================================================
+   easy-dash 共享主题层：双主题 tokens + 基础样式
+
+   使用约定：
+   1) 深色是默认值，直接写在 :root；浅色在 :root[data-theme="light"] 覆盖；
+      系统级回退用 @media (prefers-color-scheme: light) + :root:not([data-theme="dark"])，
+      这样用户显式选择深色时不会被系统浅色偏好覆盖。
+   2) 颜色/阴影/圆角/间距/时长一律引用 token，不要硬编码主题色。
+   3) 旧变量（--panel-bg/--panel-border）保留为别名，指向新 token。
+   4) theme.js 会在启动后把解析结果写入 <html data-theme> 并同步 color-scheme。
+   ============================================================ */
+
+:root,
+/* 浅色液态玻璃的“深色墨”分支：合成亮度偏暗时，整块表面切到深色 token + 浅色文字。
+   这里只加选择器，不复制 token，保证与暗色主题完全同一套语义。 */
+:root[data-material="liquid"] [data-ink="light"] {
+  color-scheme: dark;
+
+  /* ---------- 画布 / 表面阶梯（深色默认） ---------- */
+  --bg: #0b0c0f; /* 应用画布 */
+  --surface-1: #17181c; /* 面板外壳 */
+  --surface-2: #1e2025; /* 卡片 / 磁贴 */
+  --surface-3: #26282e; /* 悬浮层 / 弹出层 / 悬停抬升 */
+  --surface-inset: #0f1013; /* 凹陷区域：输入框、滑轨底、缩略图底 */
+
+  /* ---------- 文本 ---------- */
+  --text: #f2f3f5;
+  --text-dim: rgba(242, 243, 245, 0.72);
+  --text-faint: rgba(242, 243, 245, 0.45);
+
+  /* ---------- 发丝边线 ---------- */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* ---------- 强调色 ---------- */
   --accent: #3584e4;
+  --accent-hover: #4b93ef;
+  --accent-soft: rgba(53, 132, 228, 0.18);
+  --on-accent: #ffffff;
+
+  /* ---------- 语义色 ---------- */
   --danger: #f66152;
   --ok: #57e389;
+  --warn: #e5a50a;
+
+  /* ---------- 轨道 / 遮罩 ---------- */
+  --track: rgba(255, 255, 255, 0.14);
+  --scrim: rgba(9, 10, 13, 0.72);
+
+  /* ---------- 阴影 ---------- */
+  --shadow-panel: 0 10px 26px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-card: 0 6px 18px rgba(0, 0, 0, 0.38), 0 1px 3px rgba(0, 0, 0, 0.28);
+  --shadow-pop: 0 14px 38px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-icon: rgba(0, 0, 0, 0.5); /* 只给图标 drop-shadow 用的阴影色 */
+
+  /* ---------- 悬浮玻璃层（顶栏 / Dock） ---------- */
+  --topbar-bg: rgba(24, 25, 29, 0.88);
+  --topbar-border: rgba(255, 255, 255, 0.09);
+  --glass-bg: var(--topbar-bg);
+  --glass-border: var(--topbar-border);
+
+  /* ---------- 交互状态叠加（深色用白、浅色用黑） ---------- */
+  --hover: rgba(255, 255, 255, 0.1);
+  --hover-strong: rgba(255, 255, 255, 0.16);
+
+  /* ---------- 材质层（liquid / glow 在 materials.css 覆盖；solid 下保持中性值） ----------
+     玻璃感 = 半透明表面（真实透出桌面）+ 镜面边 + 层叠霞光 + 磨砂噪点 + 大圆角 + 柔和阴影。
+     WebView2 透明窗口无法模糊桌面，故 --glass-blur 只给「同窗口内有下层页内内容」的弹层用。 */
+  --glass-rim: 0 0 0 0 transparent; /* inset 镜面边组合 */
+  --glass-glow: 0 0 0 0 transparent; /* 外壳外发光（柔光玻璃） */
+  --glass-sheen: none; /* 外壳层叠高光（radial-gradient） */
+  --glass-sweep: none; /* 液态玻璃打开时的一次性扫光 */
+  --glass-topline: none; /* 面板顶部 1px 高光渐变（覆盖 .panel::before） */
+  --glass-scrim: none; /* 全屏遮罩（应用中心 / 活动概览）上的霞光 */
+  --glass-inner: none; /* 卡片内高光 */
+  --glass-panel-tint: var(--surface-1); /* 大窗口（管理面板）更实的底 */
+  --glass-pop-tint: var(--surface-3); /* 弹层实底（叠在 backdrop-filter 之上） */
+  --glass-noise-opacity: 0;
+  --glass-blur: 0px;
+  /* 磨砂噪点：去饱和的分形噪声，作为外壳 ::after 的底图（opacity 由 --glass-noise-opacity 控制） */
+  --glass-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  /* ---------- 圆角（结构 token，两主题一致） ---------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  /* ---------- 间距（结构 token，两主题一致） ---------- */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+
+  /* ---------- 动效（结构 token，两主题一致） ---------- */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* iOS 手感曲线：--ease-spring 用于按压回弹 / 分段滑块 / 开关滑块，
+     --ease-out-fluid 用于入场（快速起步、平缓收尾），--ease-spring-soft 用于轻量回弹 */
+  --ease-out-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-spring-soft: cubic-bezier(0.25, 1.16, 0.36, 1);
+  --dur-press: 110ms;
+  --dur-spring: 340ms;
+  --dur-sheet: 240ms;
+  --press-scale: 0.96;
+
+  /* ---------- 旧变量别名（向后兼容尚未 token 化的页面） ---------- */
+  --panel-bg: var(--surface-1);
+  --panel-border: var(--border);
+  /* --text / --text-dim / --accent / --danger / --ok 名称未变，本身就是 canonical token */
 }
+
+/* ============================================================
+   浅色主题（显式选择）
+   ============================================================ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f2f3f6;
+  --surface-1: #f7f7f9;
+  --surface-2: #ffffff;
+  --surface-3: #ffffff;
+  --surface-inset: #ececf0;
+
+  --text: #1d1d1f;
+  --text-dim: rgba(29, 29, 31, 0.66);
+  --text-faint: rgba(29, 29, 31, 0.42);
+
+  --border: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+
+  --accent: #1c71d8;
+  --accent-hover: #185fb8;
+  --accent-soft: rgba(28, 113, 216, 0.12);
+  --on-accent: #ffffff;
+
+  --danger: #c01c28;
+  --ok: #1b8553;
+  --warn: #9a6700;
+
+  --track: rgba(0, 0, 0, 0.12);
+  --scrim: rgba(238, 239, 243, 0.78);
+
+  --shadow-panel: 0 12px 32px rgba(20, 22, 28, 0.16), 0 2px 6px rgba(20, 22, 28, 0.08);
+  --shadow-card: 0 4px 14px rgba(20, 22, 28, 0.1), 0 1px 3px rgba(20, 22, 28, 0.06);
+  --shadow-pop: 0 14px 38px rgba(20, 22, 28, 0.18), 0 2px 8px rgba(20, 22, 28, 0.08);
+  --shadow-icon: rgba(20, 22, 28, 0.18);
+
+  --topbar-bg: rgba(248, 248, 250, 0.9);
+  --topbar-border: rgba(0, 0, 0, 0.08);
+
+  --hover: rgba(0, 0, 0, 0.055);
+  --hover-strong: rgba(0, 0, 0, 0.09);
+}
+
+/* ============================================================
+   系统浅色回退：没有显式 data-theme 时跟随系统；
+   用户显式选了 dark 时（data-theme="dark"）不被系统覆盖。
+   ============================================================ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --bg: #f2f3f6;
+    --surface-1: #f7f7f9;
+    --surface-2: #ffffff;
+    --surface-3: #ffffff;
+    --surface-inset: #ececf0;
+
+    --text: #1d1d1f;
+    --text-dim: rgba(29, 29, 31, 0.66);
+    --text-faint: rgba(29, 29, 31, 0.42);
+
+    --border: rgba(0, 0, 0, 0.1);
+    --border-strong: rgba(0, 0, 0, 0.18);
+
+    --accent: #1c71d8;
+    --accent-hover: #185fb8;
+    --accent-soft: rgba(28, 113, 216, 0.12);
+    --on-accent: #ffffff;
+
+    --danger: #c01c28;
+    --ok: #1b8553;
+    --warn: #9a6700;
+
+    --track: rgba(0, 0, 0, 0.12);
+    --scrim: rgba(238, 239, 243, 0.78);
+
+    --shadow-panel: 0 12px 32px rgba(20, 22, 28, 0.16), 0 2px 6px rgba(20, 22, 28, 0.08);
+    --shadow-card: 0 4px 14px rgba(20, 22, 28, 0.1), 0 1px 3px rgba(20, 22, 28, 0.06);
+    --shadow-pop: 0 14px 38px rgba(20, 22, 28, 0.18), 0 2px 8px rgba(20, 22, 28, 0.08);
+    --shadow-icon: rgba(20, 22, 28, 0.18);
+
+    --topbar-bg: rgba(248, 248, 250, 0.9);
+    --topbar-border: rgba(0, 0, 0, 0.08);
+
+    --hover: rgba(0, 0, 0, 0.055);
+    --hover-strong: rgba(0, 0, 0, 0.09);
+  }
+}
+
+/* ============================================================
+   基础样式
+   ============================================================ */
 
 * {
   box-sizing: border-box;
@@ -16,14 +218,16 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: transparent;
   overflow: hidden;
+  background: transparent;
 }
 
 body {
   font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
   font-size: 13px;
+  line-height: 1.45;
   color: var(--text);
+  -webkit-font-smoothing: antialiased;
   user-select: none;
   -webkit-user-select: none;
   cursor: default;
@@ -41,6 +245,55 @@ button {
   cursor: default;
 }
 
+button:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--accent);
+}
+
 .hidden {
   display: none !important;
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--track);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

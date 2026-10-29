@@ -1,6 +1,6 @@
 [package]
 name = "easy-dash"
-version = "0.1.0"
+version = "0.4.0"
 description = "类 GNOME 桌面美化工具：顶栏 + Dock + 活动概览"
 authors = ["easy-dash"]
 edition = "2021"
@@ -44,6 +44,7 @@ windows = { version = "0.58", features = [
   "Win32_Storage_FileSystem",
   "Win32_Storage_Xps",
   "Win32_System_Com",
+  "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
   "Win32_System_Power",
   "Win32_System_Shutdown",

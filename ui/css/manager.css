@@ -1,8 +1,9 @@
 /* ==========================================================================
-   管理面板（manager）样式
+   管理面板（manager）样式 —— 双主题（Aurora Glass）
    - 窗口 1060×760（面板 1000×700），透明置顶；body 四周留 30px 透明内边距，
      面板圆角 + 柔和阴影（内边距 ≥ 阴影外扩，避免阴影被窗口矩形裁切）
-   - 深色 GNOME 风格，颜色沿用 shared.css 的变量
+   - 颜色/圆角/间距全部走 shared.css 的 token，亮色与暗色两套自动适配
+   - 局部派生色用 color-mix()（WebView2/Chromium 111+ 支持）
    ========================================================================== */
 
 html,
@@ -14,23 +15,27 @@ body {
 }
 
 body {
-  padding: 30px;
+  padding: 44px;
 }
 
-/* ---------- 面板外壳 ---------- */
-
+/* 面板内局部色阶：hover / 边框弱化等，避免到处写死 rgba */
 .mp-panel {
+  --mp-hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --mp-hover-strong: color-mix(in srgb, var(--text) 14%, transparent);
+  --mp-line: color-mix(in srgb, var(--text) 7%, transparent);
+  --mp-line-soft: color-mix(in srgb, var(--text) 5%, transparent);
+  --mp-field-bg: color-mix(in srgb, var(--text) 5%, transparent);
+
   position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
   min-height: 0;
-  background: rgba(26, 26, 30, 0.97);
-  border: 1px solid var(--panel-border);
-  border-radius: 16px;
-  /* 阴影外扩约 30px，与 body 内边距一致，四边都能完整淡出 */
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.45);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-panel);
   overflow: hidden;
 }
 
@@ -39,12 +44,12 @@ body {
 .mp-titlebar {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   flex: none;
-  height: 46px;
+  height: 48px;
   padding: 0 8px 0 16px;
-  background: rgba(255, 255, 255, 0.045);
-  border-bottom: 1px solid var(--panel-border);
+  background: var(--surface-inset);
+  border-bottom: 1px solid var(--border);
 }
 
 .mp-title-icon {
@@ -58,29 +63,30 @@ body {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.2px;
+  color: var(--text);
 }
 
 .mp-close {
   flex: none;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
   font-size: 17px;
   line-height: 1;
   color: var(--text-dim);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .mp-close:hover {
-  background: rgba(246, 97, 82, 0.85);
+  background: var(--danger);
   color: #fff;
 }
 
 .mp-close:active {
-  background: rgba(246, 97, 82, 1);
+  background: color-mix(in srgb, var(--danger) 82%, #000);
 }
 
 /* ---------- 主体：侧栏 + 内容 ---------- */
@@ -94,32 +100,32 @@ body {
 .mp-sidebar {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   flex: none;
   width: 168px;
-  padding: 12px 10px;
-  background: rgba(0, 0, 0, 0.16);
-  border-right: 1px solid var(--panel-border);
+  padding: 12px 8px;
+  background: var(--mp-line-soft);
+  border-right: 1px solid var(--border);
 }
 
 .mp-tab {
   position: relative;
   height: 36px;
   padding: 0 12px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   color: var(--text-dim);
   text-align: left;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .mp-tab:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--mp-hover);
   color: var(--text);
 }
 
 .mp-tab.active {
-  background: rgba(255, 255, 255, 0.13);
+  background: var(--mp-hover-strong);
   color: var(--text);
   font-weight: 600;
 }
@@ -128,9 +134,9 @@ body {
   content: "";
   position: absolute;
   left: 0;
-  top: 9px;
-  bottom: 9px;
-  width: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
   border-radius: 2px;
   background: var(--accent);
 }
@@ -140,9 +146,9 @@ body {
   min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 18px 20px 26px;
+  padding: 20px 20px 24px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
 }
 
 .mp-content::-webkit-scrollbar {
@@ -150,8 +156,14 @@ body {
 }
 
 .mp-content::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--text) 20%, transparent);
   border-radius: 5px;
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+.mp-content::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text) 30%, transparent);
   background-clip: content-box;
   border: 2px solid transparent;
 }
@@ -167,7 +179,7 @@ body {
 }
 
 .mp-h2 {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
@@ -178,11 +190,11 @@ body {
 }
 
 .mp-card {
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  padding: 12px 14px;
-  margin-bottom: 14px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+  margin-bottom: 16px;
 }
 
 .mp-card-head {
@@ -190,17 +202,18 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--mp-line-soft);
 }
 
 .mp-card-title {
   font-size: 13px;
   font-weight: 600;
+  color: var(--text);
 }
 
 .mp-card-desc {
-  margin-top: 3px;
+  margin-top: 4px;
   font-size: 11.5px;
   color: var(--text-dim);
 }
@@ -212,14 +225,14 @@ body {
   flex: none;
 }
 
-/* ---------- 行（开关 / 热键 / 关于） ---------- */
+/* ---------- 行（开关 / 热键 / 关于 / 外观） ---------- */
 
 .mp-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 2px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  gap: 12px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--mp-line-soft);
 }
 
 .mp-row:last-of-type {
@@ -234,10 +247,11 @@ body {
 .mp-row-name {
   font-size: 13px;
   font-weight: 500;
+  color: var(--text);
 }
 
 .mp-row-desc {
-  margin-top: 2px;
+  margin-top: 4px;
   font-size: 11.5px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -245,11 +259,73 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 任务栏桥接状态小字 */
+.mp-row-status {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
+.mp-row-status.warn {
+  color: var(--warn);
+}
+
 .mp-about-label {
   flex: none;
-  width: 84px;
+  width: 88px;
   color: var(--text-dim);
   font-weight: 400;
+}
+
+/* 「当前外观」只读值 */
+.mp-theme-status {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+/* ---------- 分段控件（界面材质三档） ---------- */
+
+.mp-seg {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--mp-field-bg);
+  border: 1px solid var(--mp-line);
+}
+
+.mp-seg button {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.mp-seg button:hover {
+  background: var(--mp-hover);
+  color: var(--text);
+}
+
+/* 选中态：accent-soft 底 + 1px accent 内描边（用 inset 阴影避免布局跳动） */
+.mp-seg button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.mp-seg button:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 2px var(--accent-soft);
 }
 
 /* ---------- 开关（自定义 checkbox） ---------- */
@@ -279,9 +355,9 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.17);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
-  transition: background 0.16s ease;
+  background: var(--track);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, #000 30%, transparent);
+  transition: background var(--dur-fast) var(--ease);
   pointer-events: none;
 }
 
@@ -292,9 +368,9 @@ body {
   width: 18px;
   height: 18px;
   border-radius: 9px;
-  background: #f2f2f4;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
-  transition: transform 0.16s ease;
+  background: #fff;
+  box-shadow: 0 1px 3px color-mix(in srgb, #000 40%, transparent);
+  transition: transform var(--dur-fast) var(--ease);
 }
 
 .mp-switch input:checked + .mp-switch-track {
@@ -306,7 +382,7 @@ body {
 }
 
 .mp-switch input:focus-visible + .mp-switch-track {
-  box-shadow: 0 0 0 2px rgba(53, 132, 228, 0.55);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .mp-switch input:disabled + .mp-switch-track {
@@ -319,10 +395,10 @@ body {
   flex: none;
   width: 168px;
   height: 32px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(0, 0, 0, 0.3);
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--mp-field-bg);
   color: var(--text);
   font-family: inherit;
   font-size: 12.5px;
@@ -332,12 +408,12 @@ body {
 }
 
 .mp-input::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-dim);
 }
 
 .mp-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(53, 132, 228, 0.28);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* ---------- 按钮 ---------- */
@@ -346,7 +422,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-top: 10px;
+  padding-top: 12px;
 }
 
 .mp-row + .mp-actions {
@@ -354,32 +430,46 @@ body {
 }
 
 .mp-btn {
-  height: 30px;
+  height: 32px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 12.5px;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.09);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+  background: var(--mp-hover);
+  border: 1px solid var(--border);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
 }
 
 .mp-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--mp-hover-strong);
 }
 
 .mp-btn:active:not(:disabled) {
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--text) 20%, transparent);
 }
 
 .mp-btn.primary {
   background: var(--accent);
   border-color: transparent;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
+/* 危险操作（退出程序 / 重置）：实心 danger 底色 + 白字 */
+.mp-btn.danger {
+  background: var(--danger);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+
+.mp-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 82%, #000);
+}
+
 .mp-btn.primary:hover:not(:disabled) {
-  background: #4a92e8;
+  background: var(--accent-hover);
 }
 
 .mp-btn:disabled,
@@ -397,8 +487,8 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 2px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--mp-line-soft);
 }
 
 .mp-item:last-child {
@@ -412,6 +502,11 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.mp-item-icon svg {
+  display: block;
+  color: var(--text-dim);
 }
 
 .mp-icon {
@@ -441,16 +536,17 @@ body {
 .mp-item-name {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12.5px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--text);
 }
 
 .mp-item-path {
-  margin-top: 2px;
+  margin-top: 4px;
   font-size: 11px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -460,14 +556,14 @@ body {
 
 .mp-badge {
   flex: none;
-  height: 15px;
-  padding: 0 6px;
-  border-radius: 7px;
-  background: rgba(53, 132, 228, 0.85);
-  color: #fff;
+  height: 16px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
   font-size: 9.5px;
   font-weight: 600;
-  line-height: 15px;
+  line-height: 16px;
 }
 
 .mp-item-actions {
@@ -478,25 +574,25 @@ body {
 }
 
 .mp-icon-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   font-size: 12px;
   color: var(--text-dim);
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--mp-hover);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .mp-icon-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--mp-hover-strong);
   color: var(--text);
 }
 
 .mp-icon-btn.danger:hover:not(:disabled) {
-  background: rgba(246, 97, 82, 0.85);
+  background: var(--danger);
   color: #fff;
 }
 
@@ -532,43 +628,47 @@ body {
 /* ---------- 提示 / 警告 ---------- */
 
 .mp-warn {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
   font-size: 11.5px;
   line-height: 1.5;
-  color: #f9c74f;
-  background: rgba(249, 199, 79, 0.12);
-  border: 1px solid rgba(249, 199, 79, 0.28);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
   white-space: pre-wrap;
 }
 
 .mp-toast {
   position: absolute;
   left: 50%;
-  bottom: 18px;
+  bottom: 20px;
   transform: translateX(-50%);
   max-width: 70%;
-  padding: 8px 14px;
-  border-radius: 9px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: 1.4;
   text-align: center;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-pop);
   z-index: 20;
   pointer-events: none;
 }
 
 .mp-toast.ok {
-  background: rgba(87, 227, 137, 0.92);
-  color: #0b2917;
+  background: var(--ok);
+  color: #06210f;
   font-weight: 600;
 }
 
 .mp-toast.err {
-  background: rgba(246, 97, 82, 0.95);
+  background: var(--danger);
   color: #fff;
   font-weight: 600;
+}
+
+:root[data-theme="light"] .mp-toast.ok {
+  color: #fff;
 }
 
 /* ---------- 关于 ---------- */
@@ -592,9 +692,9 @@ body {
 }
 
 .mp-about-foot {
-  margin-top: 6px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mp-line-soft);
   font-size: 11px;
   color: var(--text-dim);
 }

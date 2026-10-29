@@ -1,22 +1,15 @@
-// 控制中心子视图：Wi-Fi 网络列表 / 蓝牙设备列表。
-// 由 control-center.js 挂到 #cc-sub 上：
-//   - onError(msg)   显示错误（复用控制中心的 cc-error 红字）
+// 控制中心子视图：Wi-Fi 网络列表 / 蓝牙设备列表（挂到 #ctl-sub）。
+// 由 control-center.js 提供三个回调：
+//   - onError(msg)   显示错误（复用控制中心的 ctl-error 内联提示）
 //   - onChanged()    连接状态变化后让控制中心刷新 get_quick_state / 设备计数
-//   - onBack()       点「‹ 返回」回到控制中心默认视图
+//   - onBack()       点「返回」回到控制中心默认视图
+// 样式前缀 conn-（见 ui/css/panels.css），不再使用旧的 cv- 类。
 import { invoke, invokeRetry, escapeHtml } from "./api.js";
+import { icon } from "./icons.js";
 
 /** 连接后轮询间隔 / 超时 */
 const POLL_MS = 1500;
 const CONNECT_TIMEOUT_MS = 10000;
-
-const ICONS = {
-  lock:
-    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
-    'stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/>' +
-    '<path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
-};
-
-const BAR_CHARS = ["▂", "▄", "▆", "█"];
 
 function errText(e) {
   if (typeof e === "string") return e;
@@ -32,13 +25,13 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** 信号 0-100 → 4 格信号条（▂▄▆█） */
+/** 信号 0-100 → 4 格信号柱（宽度/高度由 CSS 控制，颜色随 token） */
 function signalHtml(signal) {
   const q = Number(signal) || 0;
   const level = q >= 75 ? 4 : q >= 50 ? 3 : q >= 25 ? 2 : 1;
   let html = "";
-  for (let i = 0; i < BAR_CHARS.length; i++) {
-    html += '<span class="cv-bar' + (i < level ? " on" : "") + '">' + BAR_CHARS[i] + "</span>";
+  for (let i = 0; i < 4; i++) {
+    html += '<span class="conn-bar' + (i < level ? " on" : "") + '"></span>';
   }
   return html;
 }
@@ -73,18 +66,20 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
 
   function viewHtml(title, actionLabel) {
     return (
-      '<div class="cv-head">' +
-      '<button class="cv-back" type="button" data-cv-back="1">‹ 返回</button>' +
-      '<span class="cv-title">' +
+      '<div class="conn-head">' +
+      '<button class="conn-back" type="button" data-conn-back="1">' +
+      icon("chevronLeft", { size: 14 }) +
+      "<span>返回</span></button>" +
+      '<span class="conn-title">' +
       escapeHtml(title) +
       "</span>" +
-      '<button class="cv-action" type="button" id="cv-settings">' +
+      '<button class="conn-action" type="button" id="conn-settings">' +
       escapeHtml(actionLabel) +
       "</button>" +
       "</div>" +
-      '<div class="cv-status" id="cv-status"></div>' +
-      '<div class="cv-hint hidden" id="cv-hint"></div>' +
-      '<div class="cv-list" id="cv-list"></div>'
+      '<div class="conn-status" id="conn-status"></div>' +
+      '<div class="conn-hint hidden" id="conn-hint"></div>' +
+      '<div class="conn-list" id="conn-list"></div>'
     );
   }
 
@@ -92,11 +87,11 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
   function mountView(g, title, actionLabel, settingsPage) {
     if (!host) return;
     host.innerHTML = viewHtml(title, actionLabel);
-    const backBtn = q("[data-cv-back]");
+    const backBtn = q("[data-conn-back]");
     if (backBtn) {
       backBtn.addEventListener("click", () => back());
     }
-    const settingsBtn = q("#cv-settings");
+    const settingsBtn = q("#conn-settings");
     if (settingsBtn) {
       settingsBtn.addEventListener("click", () => {
         try {
@@ -110,11 +105,11 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
   }
 
   function listEl() {
-    return q("#cv-list");
+    return q("#conn-list");
   }
 
   function setStatus(msg) {
-    const el = q("#cv-status");
+    const el = q("#conn-status");
     if (!el) return;
     el.textContent = msg || "";
     el.classList.toggle("hidden", !msg);
@@ -134,11 +129,11 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
 
   function setListEmpty(msg) {
     const el = listEl();
-    if (el) el.innerHTML = '<div class="cv-empty">' + escapeHtml(msg) + "</div>";
+    if (el) el.innerHTML = '<div class="conn-empty">' + escapeHtml(msg) + "</div>";
   }
 
   function showHint(msg) {
-    const el = q("#cv-hint");
+    const el = q("#conn-hint");
     if (!el) return;
     el.textContent = msg;
     el.classList.remove("hidden");
@@ -189,28 +184,30 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
   function wifiRowHtml(n) {
     const connected = !!n.connected;
     const expanded = expandedSsid === n.ssid && !connected;
-    const lock = n.secure ? '<span class="cv-lock" title="加密网络">' + ICONS.lock + "</span>" : "";
-    const badge = connected ? '<span class="cv-badge">已连接</span>' : "";
+    const lock = n.secure
+      ? '<span class="conn-lock" title="加密网络">' + icon("lockKeyhole", { size: 12 }) + "</span>"
+      : "";
+    const badge = connected ? '<span class="conn-badge">已连接</span>' : "";
     const btn = connected
-      ? '<button class="cv-btn danger" type="button" data-act="disconnect">断开</button>'
-      : '<button class="cv-btn" type="button" data-act="connect">连接</button>';
+      ? '<button class="conn-btn danger" type="button" data-act="disconnect">断开</button>'
+      : '<button class="conn-btn" type="button" data-act="connect">连接</button>';
     const pwd = expanded
-      ? '<div class="cv-pwd"><input class="cv-input" type="password" placeholder="输入 Wi-Fi 密码" ' +
-        'autocomplete="off" spellcheck="false" /><button class="cv-btn primary" type="button" ' +
+      ? '<div class="conn-pwd"><input class="conn-input" type="password" placeholder="输入 Wi-Fi 密码" ' +
+        'autocomplete="off" spellcheck="false" /><button class="conn-btn primary" type="button" ' +
         'data-act="pwd-connect">连接</button></div>'
       : "";
     return (
-      '<div class="cv-row' +
+      '<div class="conn-row' +
       (connected ? " connected" : "") +
       (expanded ? " expanded" : "") +
       '" data-ssid="' +
       escapeHtml(n.ssid) +
       '">' +
-      '<span class="cv-signal">' + signalHtml(n.signal) + "</span>" +
-      '<span class="cv-name">' + escapeHtml(n.ssid) + "</span>" +
+      '<span class="conn-signal">' + signalHtml(n.signal) + "</span>" +
+      '<span class="conn-name">' + escapeHtml(n.ssid) + "</span>" +
       lock +
       badge +
-      '<span class="cv-right">' + btn + "</span>" +
+      '<span class="conn-right">' + btn + "</span>" +
       pwd +
       "</div>"
     );
@@ -220,7 +217,7 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
     const el = listEl();
     if (!el) return;
     el.addEventListener("click", (e) => {
-      const row = e.target.closest ? e.target.closest(".cv-row") : null;
+      const row = e.target.closest ? e.target.closest(".conn-row") : null;
       if (!row) return;
       const ssid = row.dataset.ssid || "";
       const net = wifiList.find((n) => n.ssid === ssid);
@@ -245,10 +242,10 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
     // 密码框回车提交
     el.addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
-      const input = e.target.closest ? e.target.closest(".cv-input") : null;
+      const input = e.target.closest ? e.target.closest(".conn-input") : null;
       if (!input) return;
       e.preventDefault();
-      const row = input.closest(".cv-row");
+      const row = input.closest(".conn-row");
       if (!row) return;
       const ssid = row.dataset.ssid || "";
       const net = wifiList.find((n) => n.ssid === ssid);
@@ -257,7 +254,7 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
   }
 
   function focusPasswordInput() {
-    const input = q(".cv-input");
+    const input = q(".conn-input");
     if (input) {
       try {
         input.focus();
@@ -284,7 +281,7 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
 
   function submitPassword(row, net) {
     if (busy) return;
-    const input = row.querySelector(".cv-input");
+    const input = row.querySelector(".conn-input");
     const pwd = input ? input.value : "";
     if (!pwd) {
       fail("请输入 Wi-Fi 密码");
@@ -410,14 +407,14 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
       .map((d) => {
         const connected = !!d.connected;
         return (
-          '<div class="cv-row' +
+          '<div class="conn-row' +
           (connected ? " connected" : "") +
           '" data-addr="' +
           String(d.address == null ? "" : d.address) +
           '">' +
-          '<span class="cv-name">' + escapeHtml(d.name || "未知设备") + "</span>" +
-          (connected ? '<span class="cv-badge">已连接</span>' : "") +
-          '<span class="cv-right"><button class="cv-btn ' +
+          '<span class="conn-name">' + escapeHtml(d.name || "未知设备") + "</span>" +
+          (connected ? '<span class="conn-badge">已连接</span>' : "") +
+          '<span class="conn-right"><button class="conn-btn ' +
           (connected ? "danger" : "primary") +
           '" type="button" data-act="toggle">' +
           (connected ? "断开" : "连接") +
@@ -434,7 +431,7 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
     el.addEventListener("click", (e) => {
       const btn = e.target.closest ? e.target.closest("[data-act]") : null;
       if (!btn || btn.dataset.act !== "toggle") return;
-      const row = btn.closest(".cv-row");
+      const row = btn.closest(".conn-row");
       if (!row) return;
       const address = Number(row.dataset.addr);
       if (!Number.isFinite(address)) return;
@@ -472,7 +469,7 @@ export function createConnections({ host, onError, onChanged, onBack } = {}) {
   }
 
   function hideHint() {
-    const el = q("#cv-hint");
+    const el = q("#conn-hint");
     if (el) {
       el.textContent = "";
       el.classList.add("hidden");
